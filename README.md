@@ -44,6 +44,17 @@ propre à chaque environnement et vit dans `config/dev.yaml`, `config/preprod.ya
 ./.venv/bin/python pipeline/transform.py --env prod   # harmonise + charge dans environments/prod/db_prod.duckdb
 ```
 
+## Tests
+
+```bash
+./.venv/bin/pytest tests/ -v
+```
+
+Tests unitaires sur `pipeline/transform.py` (harmonisation du schéma des 3 sources, calcul de
+`taux_ponctualite`/`taux_annulation`, gestion des cas à 0 train programmé/circulé, sélection de
+l'échantillon dev) à partir de fixtures CSV réduites dans `tests/fixtures/`. Exécutés en CI à
+chaque push/PR sur `main`, en plus du smoke test end-to-end du pipeline complet.
+
 ## Utilisation (Docker)
 
 Un service Compose par environnement (`dev`, `preprod`, `prod`), même image, seule la variable
@@ -68,6 +79,7 @@ Ne jamais écrire les résultats du dossier depuis **dev** : toujours repasser p
 data/raw/              CSV téléchargés depuis data.gouv.fr (non versionnés, régénérables via ingest.py)
 data/processed/         données nettoyées (non versionné)
 pipeline/               ingest.py, transform.py, run.py
+tests/                  tests unitaires (pytest) sur pipeline/transform.py, fixtures CSV réduites
 analysis/               requêtes SQL, tests statistiques, graphiques (à venir — Jour 2+)
 tarifs/                 échantillon de prix collecté manuellement (à venir — Jour 3)
 config/                 dev.yaml / preprod.yaml / prod.yaml

@@ -1,0 +1,5 @@
+Date;Gare de départ;Gare d'arrivée;Nombre de circulations prévues;Nombre de trains annulés;Nombre de trains en retard à l'arrivée;Retard moyen de tous les trains à l'arrivée
+2024-01;PARIS;LYON;100;0;10;5.5
+2024-02;PARIS;LYON;100;0;20;8.2
+2024-03;PARIS;LYON;100;0;15;6.1
+2024-01;MARSEILLE;NICE;0;0;0;

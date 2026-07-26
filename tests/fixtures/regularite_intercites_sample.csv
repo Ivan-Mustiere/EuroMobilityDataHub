@@ -1,0 +1,4 @@
+Date;Départ;Arrivée;Nombre de trains programmés;Nombre de trains ayant circulé;Nombre de trains annulés;Nombre de trains en retard à l'arrivée
+2024-01;PARIS;TOULOUSE;50;48;2;5
+2024-02;PARIS;TOULOUSE;50;50;0;10
+2024-03;PARIS;TOULOUSE;50;49;1;8

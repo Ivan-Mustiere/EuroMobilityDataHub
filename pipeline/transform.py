@@ -46,7 +46,12 @@ def load_config(env: str) -> dict:
         return yaml.safe_load(fh)
 
 
-def build_harmonized_table(con: duckdb.DuckDBPyConnection) -> None:
+def build_harmonized_table(
+    con: duckdb.DuckDBPyConnection,
+    tgv_csv: pathlib.Path = TGV_CSV,
+    ter_csv: pathlib.Path = TER_CSV,
+    intercites_csv: pathlib.Path = INTERCITES_CSV,
+) -> None:
     con.execute(f"""
         CREATE OR REPLACE TABLE regularite AS
         SELECT
@@ -63,7 +68,7 @@ def build_harmonized_table(con: duckdb.DuckDBPyConnection) -> None:
             TRY_CAST("Nombre de trains en retard à l'arrivée" AS INTEGER) AS nb_trains_retard_arrivee,
             TRY_CAST("Retard moyen de tous les trains à l'arrivée" AS DOUBLE) AS retard_moyen_tous_trains_arrivee_min,
             'regularite_tgv.csv' AS source_file
-        FROM read_csv('{TGV_CSV.as_posix()}', delim=';', header=true)
+        FROM read_csv('{pathlib.Path(tgv_csv).as_posix()}', delim=';', header=true)
 
         UNION ALL BY NAME
 
@@ -81,7 +86,7 @@ def build_harmonized_table(con: duckdb.DuckDBPyConnection) -> None:
             TRY_CAST("Nombre de trains en retard à l'arrivée" AS INTEGER) AS nb_trains_retard_arrivee,
             CAST(NULL AS DOUBLE) AS retard_moyen_tous_trains_arrivee_min,
             'regularite_ter.csv' AS source_file
-        FROM read_csv('{TER_CSV.as_posix()}', delim=';', header=true)
+        FROM read_csv('{pathlib.Path(ter_csv).as_posix()}', delim=';', header=true)
 
         UNION ALL BY NAME
 
@@ -99,7 +104,7 @@ def build_harmonized_table(con: duckdb.DuckDBPyConnection) -> None:
             TRY_CAST("Nombre de trains en retard à l'arrivée" AS INTEGER) AS nb_trains_retard_arrivee,
             CAST(NULL AS DOUBLE) AS retard_moyen_tous_trains_arrivee_min,
             'regularite_intercites.csv' AS source_file
-        FROM read_csv('{INTERCITES_CSV.as_posix()}', delim=';', header=true)
+        FROM read_csv('{pathlib.Path(intercites_csv).as_posix()}', delim=';', header=true)
     """)
 
     con.execute("""
