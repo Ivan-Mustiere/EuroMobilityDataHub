@@ -73,3 +73,52 @@ def test_regularite_stats(client):
     assert response.status_code == 200
     types = {row["type_ligne"] for row in response.json()}
     assert types == {"grande_vitesse", "regional", "intercite"}
+
+
+@pytest.mark.parametrize(
+    "raw_ip, expected",
+    [
+        ("82.45.12.7", "82.45.0.0"),
+        ("127.0.0.1", "127.0.0.0"),
+        ("2001:0db8:85a3:0000:0000:8a2e:0370:7334", "2001:0db8:85a3:0:0:0:0:0"),
+        (None, "unknown"),
+        ("not-an-ip", "unknown"),
+    ],
+)
+def test_anonymize_ip(raw_ip, expected):
+    assert api_main.anonymize_ip(raw_ip) == expected
+
+
+def test_access_log_never_contains_raw_client_ip(client, caplog):
+    import logging
+    import re
+
+    with caplog.at_level(logging.INFO, logger="euromobilitydatahub.access"):
+        client.get("/health")
+
+    assert len(caplog.records) == 1
+    logged_message = caplog.records[0].getMessage()
+    # aucun octet non masqué de type "x.x.x.NNN" (NNN != 0) ne doit apparaître dans le log
+    assert not re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.(?!0\b)\d{1,3}\b", logged_message)
+    assert '"GET /health" 200' in logged_message
+
+
+def test_metrics_endpoint_exposes_prometheus_format(client):
+    # les compteurs Prometheus sont un état global du process : on ne peut pas viser une valeur
+    # exacte (d'autres tests de ce fichier appellent aussi ces endpoints avant celui-ci), on
+    # vérifie juste la présence des séries attendues avec les bons labels.
+    client.get("/health")
+    client.get("/stations")
+    client.get("/stations/does-not-exist")
+
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    body = response.text
+
+    assert 'api_requests_total{method="GET",path="/health",status="200"}' in body
+    assert 'api_requests_total{method="GET",path="/stations",status="200"}' in body
+    # le gabarit de route ("{station_id}"), pas l'ID brut "does-not-exist" -> pas d'explosion de cardinalité
+    assert 'path="/stations/{station_id}",status="404"' in body
+    assert "does-not-exist" not in body
+    assert "api_request_duration_seconds" in body
