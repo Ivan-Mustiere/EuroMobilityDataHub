@@ -2,9 +2,9 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [preprod, prod]
   push:
-    branches: [main]
+    branches: [preprod, prod]
 
 jobs:
   build-and-smoke-test:
