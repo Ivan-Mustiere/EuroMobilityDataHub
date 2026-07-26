@@ -1,0 +1,3 @@
+Transporteur;Gare origine;Gare origine - code UIC;Gare destination;Gare destination - code UIC;Classe;Profil tarifaire;Prix minimum;Prix maximum
+TGV INOUI;PARIS;87271007;LYON;87721003;2;Tarif Normal;20.0;100.0
+OUIGO;PARIS;87271007;LYON;87721003;2;Tarif Normal;10.0;40.0

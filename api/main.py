@@ -1,16 +1,21 @@
 """API REST EuroMobilityDataHub — sert les données réelles produites par le pipeline.
 
 Lecture seule sur la base DuckDB de l'environnement APP_ENV (dev|preprod|prod).
-Lancer : uvicorn api.main:app --reload
+Lancer : uvicorn api.main:app --reload --no-access-log
+(--no-access-log : les access logs bruts d'uvicorn contiennent l'IP en clair, remplacés par notre
+propre log anonymisé ci-dessous — cf. politique RGPD décrite dans le Bloc 1, partie 5.1/5.2/d.)
 """
 
+import logging
 import os
 import pathlib
+import time
 from typing import Optional
 
 import duckdb
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
 load_dotenv()
 
@@ -29,11 +34,73 @@ REGULARITE_COLUMNS = [
     "taux_ponctualite", "taux_annulation",
 ]
 
+access_logger = logging.getLogger("euromobilitydatahub.access")
+access_logger.setLevel(logging.INFO)
+if not access_logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    access_logger.addHandler(_handler)
+
 app = FastAPI(
     title="EuroMobilityDataHub API",
     description="Ponctualité ferroviaire SNCF et référentiel des gares, à partir de données ouvertes ODbL.",
     version="0.1.0",
 )
+
+REQUEST_COUNT = Counter(
+    "api_requests_total", "Nombre total de requêtes reçues par l'API", ["method", "path", "status"]
+)
+REQUEST_LATENCY = Histogram(
+    "api_request_duration_seconds", "Durée des requêtes API, en secondes", ["method", "path"]
+)
+
+
+def anonymize_ip(ip: str) -> str:
+    """Masque la partie identifiante d'une IP avant tout écriture en log.
+
+    Méthode recommandée par la CNIL et décrite dans le Bloc 1 (partie 5.1/d) : les deux derniers
+    octets d'une IPv4 sont masqués (ex. 82.45.12.7 -> 82.45.0.0), rendant la réidentification d'un
+    utilisateur impossible tout en conservant assez d'information pour détecter des abus par plage
+    géographique large. Pour IPv6, les 80 derniers bits (5 derniers groupes) sont masqués de la
+    même manière.
+    """
+    if ip is None:
+        return "unknown"
+    if ":" in ip:
+        groups = ip.split(":")
+        return ":".join(groups[:3] + ["0"] * max(len(groups) - 3, 0))
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"{parts[0]}.{parts[1]}.0.0"
+    return "unknown"
+
+
+@app.middleware("http")
+async def anonymized_access_log_and_metrics(request: Request, call_next):
+    """Journalise chaque requête avec une IP anonymisée (minimisation RGPD, cf. anonymize_ip) et
+    enregistre les métriques Prometheus (nombre de requêtes, latence) exposées sur /metrics.
+    """
+    start = time.perf_counter()
+    response = await call_next(request)
+    duration = time.perf_counter() - start
+
+    # Après le routing, request.scope contient la route résolue : on utilise son gabarit
+    # ("/stations/{station_id}") plutôt que le chemin brut, pour éviter l'explosion de cardinalité
+    # des métriques Prometheus si des identifiants uniques apparaissent dans l'URL.
+    route = request.scope.get("route")
+    path_label = route.path if route is not None else request.url.path
+
+    REQUEST_COUNT.labels(method=request.method, path=path_label, status=response.status_code).inc()
+    REQUEST_LATENCY.labels(method=request.method, path=path_label).observe(duration)
+
+    client_ip = anonymize_ip(request.client.host if request.client else None)
+    access_logger.info('%s - "%s %s" %s', client_ip, request.method, request.url.path, response.status_code)
+    return response
+
+
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 def get_connection() -> duckdb.DuckDBPyConnection:
