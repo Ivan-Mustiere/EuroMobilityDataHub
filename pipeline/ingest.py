@@ -16,6 +16,8 @@ SOURCES = {
     "regularite_ter.csv": "https://www.data.gouv.fr/api/1/datasets/r/98c86a31-4312-4513-a94d-0bcb9f057f39",
     "regularite_intercites.csv": "https://www.data.gouv.fr/api/1/datasets/r/050a8fe9-6606-4aaf-b77f-b2adccc158aa",
     "gares.csv": "https://www.data.gouv.fr/api/1/datasets/r/cbacca02-6925-4a46-aab6-7194debbb9b7",
+    "tarifs_tgv_ouigo.csv": "https://www.data.gouv.fr/api/1/datasets/r/cffcec3b-1c13-4e92-b530-1db00bb3ac1b",
+    "tarifs_intercites.csv": "https://www.data.gouv.fr/api/1/datasets/r/929f0d1e-f5b7-4f42-88e1-bf9c6859db73",
 }
 
 

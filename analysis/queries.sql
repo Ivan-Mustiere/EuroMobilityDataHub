@@ -72,3 +72,40 @@ FROM fact_regularite
 WHERE taux_ponctualite IS NOT NULL
 GROUP BY type_ligne, mois
 ORDER BY type_ligne, mois;
+
+-- =============================================================================================
+-- Requête 5 — Prix moyen au km (médiane), par type de ligne
+-- fact_fares est construite à partir des grilles tarifaires officielles SNCF (ODbL), pas d'un
+-- relevé manuel — voir build_fact_fares() dans pipeline/transform.py pour la méthode et sa limite
+-- de couverture (rapprochement par nom avec dim_liaisons, partiel).
+-- =============================================================================================
+SELECT
+    type_ligne,
+    COUNT(*)                          AS nb_tarifs,
+    ROUND(MEDIAN(prix_moyen_km), 3)   AS prix_km_median,
+    ROUND(MIN(prix_moyen_km), 3)      AS prix_km_min,
+    ROUND(MAX(prix_moyen_km), 3)      AS prix_km_max
+FROM fact_fares
+WHERE prix_moyen_km IS NOT NULL
+  AND classe = '2'
+  AND profil_tarifaire = 'Tarif Normal'
+GROUP BY type_ligne
+ORDER BY type_ligne;
+
+-- =============================================================================================
+-- Requête 6 — Détail des liaisons avec prix, distance et prix/km (base de l'analyse Spearman H2)
+-- =============================================================================================
+SELECT
+    type_ligne,
+    gare_origine,
+    gare_destination,
+    distance_km,
+    prix_minimum,
+    prix_maximum,
+    prix_moyen,
+    prix_moyen_km
+FROM fact_fares
+WHERE prix_moyen_km IS NOT NULL
+  AND classe = '2'
+  AND profil_tarifaire = 'Tarif Normal'
+ORDER BY distance_km;

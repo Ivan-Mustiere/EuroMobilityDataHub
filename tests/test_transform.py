@@ -1,23 +1,6 @@
-import pathlib
-
-import duckdb
-import pytest
 import transform
 
-FIXTURES = pathlib.Path(__file__).parent / "fixtures"
-
-
-@pytest.fixture
-def con():
-    connection = duckdb.connect()
-    transform.build_harmonized_table(
-        connection,
-        tgv_csv=FIXTURES / "regularite_tgv_sample.csv",
-        ter_csv=FIXTURES / "regularite_ter_sample.csv",
-        intercites_csv=FIXTURES / "regularite_intercites_sample.csv",
-    )
-    yield connection
-    connection.close()
+from conftest import FIXTURES
 
 
 def test_row_count(con):
@@ -127,3 +110,77 @@ def test_dim_stations_parses_lat_lon(con):
         "SELECT nom_gare, nom_gare_norm, latitude, longitude FROM dim_stations WHERE trigramme = 'PMP'"
     ).fetchone()
     assert row == ("Paris Montparnasse", "PARIS MONTPARNASSE", 48.8422, 2.3219)
+
+
+def test_dim_liaisons_computes_haversine_distance_when_matched(con):
+    # "Paris"/"Lyon" (génériques) rapprochent exactement les gares PARIS/LYON du fixture TGV
+    transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_liaisons_sample.csv")
+    transform.build_dim_liaisons(con)
+    row = con.execute(
+        "SELECT distance_km FROM dim_liaisons WHERE gare_depart = 'PARIS' AND gare_arrivee = 'LYON'"
+    ).fetchone()
+    assert row is not None
+    # distance Paris-Lyon à vol d'oiseau ≈ 392 km
+    assert 380 < row[0] < 400
+
+
+def test_dim_liaisons_null_when_station_not_matched(con):
+    # gares_sample.csv ne contient que "Paris Montparnasse"/"Lyon Part Dieu" : ne matche pas les
+    # libellés bruts PARIS/LYON/MARSEILLE/NICE/TOULOUSE des fixtures fact_regularite -> NULL partout
+    transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_sample.csv")
+    transform.build_dim_liaisons(con)
+    rows = con.execute("SELECT distance_km FROM dim_liaisons").fetchall()
+    assert len(rows) > 0
+    assert all(r[0] is None for r in rows)
+
+
+def test_fact_fares_type_ligne_mapping_and_prix_moyen(con):
+    transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_liaisons_sample.csv")
+    transform.build_dim_liaisons(con)
+    transform.build_fact_fares(
+        con,
+        tgv_fares_csv=FIXTURES / "tarifs_tgv_sample.csv",
+        intercites_fares_csv=FIXTURES / "tarifs_intercites_sample.csv",
+    )
+    rows = con.execute(
+        "SELECT type_ligne, transporteur, prix_moyen FROM fact_fares ORDER BY transporteur"
+    ).fetchall()
+    assert ("intercite", "Intercités de jour à réservation obligatoire", 60.0) in rows
+    assert ("grande_vitesse", "OUIGO", 25.0) in rows
+    assert ("grande_vitesse", "TGV INOUI", 60.0) in rows
+
+
+def test_fact_fares_computes_prix_moyen_km_when_matched(con):
+    # "Paris"/"Lyon"/"Toulouse" (génériques) rapprochent exactement les libellés des fixtures tarifs
+    transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_liaisons_sample.csv")
+    transform.build_dim_liaisons(con)
+    transform.build_fact_fares(
+        con,
+        tgv_fares_csv=FIXTURES / "tarifs_tgv_sample.csv",
+        intercites_fares_csv=FIXTURES / "tarifs_intercites_sample.csv",
+    )
+    tgv_row = con.execute(
+        "SELECT distance_km, prix_moyen_km FROM fact_fares WHERE transporteur = 'TGV INOUI'"
+    ).fetchone()
+    assert tgv_row[0] is not None and 380 < tgv_row[0] < 400
+    assert tgv_row[1] == round(60.0 / tgv_row[0], 3)
+
+    ic_row = con.execute(
+        "SELECT distance_km, prix_moyen_km FROM fact_fares WHERE type_ligne = 'intercite'"
+    ).fetchone()
+    assert ic_row[0] is not None and 550 < ic_row[0] < 620
+    assert ic_row[1] == round(60.0 / ic_row[0], 3)
+
+
+def test_fact_fares_null_prix_km_when_liaison_not_matched(con):
+    # gares_sample.csv ne contient pas PARIS/LYON/TOULOUSE tels quels -> pas de distance -> NULL
+    transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_sample.csv")
+    transform.build_dim_liaisons(con)
+    transform.build_fact_fares(
+        con,
+        tgv_fares_csv=FIXTURES / "tarifs_tgv_sample.csv",
+        intercites_fares_csv=FIXTURES / "tarifs_intercites_sample.csv",
+    )
+    rows = con.execute("SELECT prix_moyen_km FROM fact_fares").fetchall()
+    assert len(rows) > 0
+    assert all(r[0] is None for r in rows)

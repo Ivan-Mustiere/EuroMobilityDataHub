@@ -1,0 +1,4 @@
+Nom_Gare;Trigramme;Segment(s) DRG;Position géographique;Code commune;Code_UIC;Id_Gare
+Paris;PAR;A;48.8566, 2.3522;75056;87271007;uuid-paris-generic
+Lyon;LYN;A;45.7640, 4.8357;69123;87721003;uuid-lyon-generic
+Toulouse;TOU;A;43.6047, 1.4442;31555;87611004;uuid-toulouse-generic
