@@ -1,0 +1,42 @@
+import transform
+import stats_tests
+
+from conftest import FIXTURES
+
+
+def test_compute_h1_anova_structure(con):
+    result = stats_tests.compute_h1_anova(con)
+    assert result["n_par_groupe"] == {"grande_vitesse": 3, "regional": 4, "intercite": 3}
+    assert isinstance(result["f_stat"], float)
+    assert isinstance(result["p_value"], float)
+    assert result["significatif"] == (result["p_value"] < stats_tests.ALPHA)
+
+
+def test_compute_h2_spearman_too_small_without_fares(con):
+    # aucune table fact_fares construite : la jointure échoue -> il faut la construire d'abord
+    transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_sample.csv")
+    transform.build_dim_liaisons(con)
+    transform.build_fact_fares(
+        con,
+        tgv_fares_csv=FIXTURES / "tarifs_tgv_sample.csv",
+        intercites_fares_csv=FIXTURES / "tarifs_intercites_sample.csv",
+    )
+    # gares_sample.csv ne matche pas PARIS/LYON/TOULOUSE -> aucun prix_moyen_km non NULL
+    result = stats_tests.compute_h2_spearman(con)
+    assert result["n"] == 0
+    assert result["rho"] is None
+    assert result["significatif"] is None
+
+
+def test_compute_h2_spearman_with_matched_fares(con):
+    transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_liaisons_sample.csv")
+    transform.build_dim_liaisons(con)
+    transform.build_fact_fares(
+        con,
+        tgv_fares_csv=FIXTURES / "tarifs_tgv_sample.csv",
+        intercites_fares_csv=FIXTURES / "tarifs_intercites_sample.csv",
+    )
+    result = stats_tests.compute_h2_spearman(con)
+    assert result["n"] == 3  # TGV INOUI + OUIGO Paris->Lyon, Intercités Paris->Toulouse
+    assert isinstance(result["rho"], float)
+    assert isinstance(result["p_value"], float)
