@@ -2,7 +2,7 @@
 
 Écrit le résultat dans la base DuckDB de l'environnement demandé (voir config/<env>.yaml).
 
-Schéma harmonisé (table `regularite`) :
+Schéma harmonisé (table `fact_regularite`) :
     mois                                    VARCHAR   'YYYY-MM'
     type_ligne                              VARCHAR   'grande_vitesse' | 'regional' | 'intercite'
     axe_type                                VARCHAR   'liaison' (TGV/Intercités) | 'region' (TER)
@@ -53,7 +53,7 @@ def build_harmonized_table(
     intercites_csv: pathlib.Path = INTERCITES_CSV,
 ) -> None:
     con.execute(f"""
-        CREATE OR REPLACE TABLE regularite AS
+        CREATE OR REPLACE TABLE fact_regularite AS
         SELECT
             "Date" AS mois,
             'grande_vitesse' AS type_ligne,
@@ -108,7 +108,7 @@ def build_harmonized_table(
     """)
 
     con.execute("""
-        CREATE OR REPLACE TABLE regularite AS
+        CREATE OR REPLACE TABLE fact_regularite AS
         SELECT
             *,
             CASE WHEN nb_trains_circules > 0
@@ -117,7 +117,7 @@ def build_harmonized_table(
             CASE WHEN nb_trains_prevus > 0
                  THEN ROUND(100.0 * nb_trains_annules / nb_trains_prevus, 2)
             END AS taux_annulation
-        FROM regularite
+        FROM fact_regularite
     """)
 
 
@@ -125,9 +125,9 @@ def apply_dev_sample(con: duckdb.DuckDBPyConnection, sample_cfg: dict) -> None:
     liaisons_max = sample_cfg.get("liaisons_max", 1)
     mois_max = sample_cfg.get("mois_max", 3)
     con.execute(f"""
-        CREATE OR REPLACE TABLE regularite AS
+        CREATE OR REPLACE TABLE fact_regularite AS
         WITH mois_max_par_type AS (
-            SELECT type_ligne, MAX(mois) AS m FROM regularite GROUP BY type_ligne
+            SELECT type_ligne, MAX(mois) AS m FROM fact_regularite GROUP BY type_ligne
         ),
         axes_actifs AS (
             -- ne garder que des axes qui ont encore des données au dernier mois disponible
@@ -135,7 +135,7 @@ def apply_dev_sample(con: duckdb.DuckDBPyConnection, sample_cfg: dict) -> None:
             -- temporelle) ; évite par ex. une région TER disparue lors de la fusion des
             -- régions de 2016
             SELECT DISTINCT r.type_ligne, r.axe_label
-            FROM regularite r
+            FROM fact_regularite r
             JOIN mois_max_par_type mmt ON mmt.type_ligne = r.type_ligne AND mmt.m = r.mois
         ),
         axes_par_type AS (
@@ -148,12 +148,12 @@ def apply_dev_sample(con: duckdb.DuckDBPyConnection, sample_cfg: dict) -> None:
         ),
         mois_recents AS (
             SELECT DISTINCT mois
-            FROM regularite
+            FROM fact_regularite
             ORDER BY mois DESC
             LIMIT {mois_max}
         )
         SELECT r.*
-        FROM regularite r
+        FROM fact_regularite r
         WHERE (r.type_ligne, r.axe_label) IN (SELECT type_ligne, axe_label FROM axes_retenus)
           AND r.mois IN (SELECT mois FROM mois_recents)
     """)
@@ -167,12 +167,12 @@ def run(env: str) -> None:
     con = duckdb.connect(str(db_path))
     build_harmonized_table(con)
 
-    n_total = con.execute("SELECT COUNT(*) FROM regularite").fetchone()[0]
-    print(f"[transform] table 'regularite' construite : {n_total} lignes (avant échantillonnage éventuel)")
+    n_total = con.execute("SELECT COUNT(*) FROM fact_regularite").fetchone()[0]
+    print(f"[transform] table 'fact_regularite' construite : {n_total} lignes (avant échantillonnage éventuel)")
 
     if config.get("sample", {}).get("enabled"):
         apply_dev_sample(con, config["sample"])
-        n_sample = con.execute("SELECT COUNT(*) FROM regularite").fetchone()[0]
+        n_sample = con.execute("SELECT COUNT(*) FROM fact_regularite").fetchone()[0]
         print(f"[transform] échantillon dev appliqué : {n_sample} lignes")
 
     con.close()
