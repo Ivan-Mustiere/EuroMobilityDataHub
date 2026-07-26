@@ -1,0 +1,3 @@
+Nom_Gare;Trigramme;Segment(s) DRG;Position géographique;Code commune;Code_UIC;Id_Gare
+Paris Montparnasse;PMP;A;48.8422, 2.3219;75115;87391003;uuid-paris-montparnasse
+Lyon Part Dieu;LPD;A;45.7605, 4.8592;69003;87723197;uuid-lyon-part-dieu

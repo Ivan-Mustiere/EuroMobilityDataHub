@@ -38,6 +38,7 @@ RAW_DIR = ROOT / "data" / "raw"
 TGV_CSV = RAW_DIR / "regularite_tgv.csv"
 TER_CSV = RAW_DIR / "regularite_ter.csv"
 INTERCITES_CSV = RAW_DIR / "regularite_intercites.csv"
+GARES_CSV = RAW_DIR / "gares.csv"
 
 
 def load_config(env: str) -> dict:
@@ -121,6 +122,31 @@ def build_harmonized_table(
     """)
 
 
+def build_dim_stations(con: duckdb.DuckDBPyConnection, gares_csv: pathlib.Path = GARES_CSV) -> None:
+    """Référentiel des gares SNCF (nom aligné sur le Bloc 1 : dim_stations).
+
+    "Position géographique" est une seule colonne "lat, lon" dans le CSV source : on la
+    découpe en deux colonnes numériques. `nom_gare_norm` (majuscules) sert de clé de
+    rapprochement avec les libellés de gare de fact_regularite (eux-mêmes en majuscules) —
+    limite connue : le rapprochement par nom exact n'est que partiel (~40 % lors de
+    l'exploration initiale), en raison des abréviations ("ST" vs "SAINT"), accents, tirets et
+    libellés combinés ("ALBI/RODEZ" pour une liaison à deux gares) ; à documenter en 4.4/6.2.
+    """
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_stations AS
+        SELECT
+            "Id_Gare" AS station_id,
+            "Nom_Gare" AS nom_gare,
+            UPPER("Nom_Gare") AS nom_gare_norm,
+            "Trigramme" AS trigramme,
+            "Code_UIC" AS code_uic,
+            "Code commune" AS code_commune,
+            TRY_CAST(SPLIT_PART("Position géographique", ',', 1) AS DOUBLE) AS latitude,
+            TRY_CAST(TRIM(SPLIT_PART("Position géographique", ',', 2)) AS DOUBLE) AS longitude
+        FROM read_csv('{pathlib.Path(gares_csv).as_posix()}', delim=';', header=true)
+    """)
+
+
 def apply_dev_sample(con: duckdb.DuckDBPyConnection, sample_cfg: dict) -> None:
     liaisons_max = sample_cfg.get("liaisons_max", 1)
     mois_max = sample_cfg.get("mois_max", 3)
@@ -174,6 +200,10 @@ def run(env: str) -> None:
         apply_dev_sample(con, config["sample"])
         n_sample = con.execute("SELECT COUNT(*) FROM fact_regularite").fetchone()[0]
         print(f"[transform] échantillon dev appliqué : {n_sample} lignes")
+
+    build_dim_stations(con)
+    n_stations = con.execute("SELECT COUNT(*) FROM dim_stations").fetchone()[0]
+    print(f"[transform] table 'dim_stations' construite : {n_stations} gares")
 
     con.close()
     print(f"[transform] base écrite dans {db_path}")

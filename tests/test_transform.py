@@ -118,3 +118,12 @@ def test_dev_sample_keeps_only_most_recent_months(con):
     transform.apply_dev_sample(con, {"liaisons_max": 1, "mois_max": 2})
     months = {r[0] for r in con.execute("SELECT DISTINCT mois FROM fact_regularite").fetchall()}
     assert months == {"2024-02", "2024-03"}
+
+
+def test_dim_stations_parses_lat_lon(con):
+    transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_sample.csv")
+    assert con.execute("SELECT COUNT(*) FROM dim_stations").fetchone()[0] == 2
+    row = con.execute(
+        "SELECT nom_gare, nom_gare_norm, latitude, longitude FROM dim_stations WHERE trigramme = 'PMP'"
+    ).fetchone()
+    assert row == ("Paris Montparnasse", "PARIS MONTPARNASSE", 48.8422, 2.3219)
