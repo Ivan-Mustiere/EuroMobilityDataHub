@@ -1,8 +1,9 @@
-# EuroMobilityDataHub — Bloc 2 (RNCP 39586)
+# EuroMobilityDataHub
 
-Pipeline de données réel (Python + DuckDB) produisant les résultats du dossier de certification
-Bloc 2 : un baromètre comparatif de la ponctualité et des tarifs ferroviaires, à partir de vraies
-données ouvertes SNCF.
+Plateforme de centralisation de données ferroviaires européennes. Ce dépôt contient le pipeline
+de données réel (Python + DuckDB) qui produit un baromètre comparatif de la ponctualité et des
+tarifs ferroviaires à partir de vraies données ouvertes SNCF, ainsi que la documentation
+d'architecture du projet (`docs/`).
 
 ## Workflow Git
 
@@ -87,16 +88,17 @@ Ne jamais écrire les résultats du dossier depuis **dev** : toujours repasser p
 ## Structure du projet
 
 ```
-data/raw/              CSV téléchargés depuis data.gouv.fr (non versionnés, régénérables via ingest.py)
-data/processed/         données nettoyées (non versionné)
+docs/                   documentation d'architecture du projet
 pipeline/               ingest.py, transform.py, run.py
 tests/                  tests unitaires (pytest) sur pipeline/transform.py, fixtures CSV réduites
-analysis/               requêtes SQL, tests statistiques, graphiques (à venir — Jour 2+)
-tarifs/                 échantillon de prix collecté manuellement (à venir — Jour 3)
+analysis/               requêtes SQL, tests statistiques, graphiques (à venir)
+tarifs/                 échantillon de prix collecté manuellement (à venir)
 config/                 dev.yaml / preprod.yaml / prod.yaml
 environments/           bases DuckDB par environnement (non versionnées)
+data/raw/               CSV téléchargés depuis data.gouv.fr (non versionnés, régénérables via ingest.py)
+data/processed/         données nettoyées (non versionné)
 outputs/                résultats/graphiques/stats définitifs (issus de l'environnement prod)
-dossier/                dossier de certification mis à jour
+dossier/                dossier mis à jour avec les résultats réels
 ```
 
 ## Données sources
