@@ -52,8 +52,20 @@ propre à chaque environnement et vit dans `config/dev.yaml`, `config/preprod.ya
 ./.venv/bin/python pipeline/run.py --env preprod --skip-download
 
 # Étapes séparées
-./.venv/bin/python pipeline/ingest.py            # télécharge les 3 CSV dans data/raw/
+./.venv/bin/python pipeline/ingest.py            # télécharge les CSV dans data/raw/
 ./.venv/bin/python pipeline/transform.py --env prod   # harmonise + charge dans environments/prod/db_prod.duckdb
+
+# Tests statistiques (ANOVA H1, Spearman H2) sur les données de l'environnement
+./.venv/bin/python analysis/stats_tests.py --env preprod
+
+# Profilage qualité (pandas) des CSV bruts : valeurs manquantes, doublons, outliers
+./.venv/bin/python analysis/profile_data.py
+
+# Graphiques accessibles (barres, histogramme, heatmap, nuage de points) -> outputs/charts/
+./.venv/bin/python analysis/charts.py --env preprod
+
+# Tableau de résultats consolidé -> outputs/resultats.csv
+./.venv/bin/python analysis/export_results.py --env preprod
 ```
 
 ## Tests
@@ -74,8 +86,12 @@ gares, ponctualité par type de ligne/liaison/mois) — reflète les tables rée
 décrite dans le Bloc 1 (`dim_stations`, `fact_regularite`), pas de données factices.
 
 ```bash
-APP_ENV=preprod ./.venv/bin/uvicorn api.main:app --reload
+APP_ENV=preprod ./.venv/bin/uvicorn api.main:app --reload --no-access-log
 ```
+
+RGPD (aligné sur le Bloc 1, partie 5.1/d) : les access logs bruts d'uvicorn (IP en clair) sont
+désactivés (`--no-access-log`) et remplacés par un log applicatif qui anonymise systématiquement
+l'IP (deux derniers octets masqués) avant écriture — voir `anonymize_ip()` dans `api/main.py`.
 
 Documentation interactive : http://127.0.0.1:8000/docs
 
@@ -86,12 +102,24 @@ Documentation interactive : http://127.0.0.1:8000/docs
 | `GET /stations/{station_id}` | Détail d'une gare |
 | `GET /regularite` | Ponctualité/retard (filtres `type_ligne`, `mois`, `axe_label`, `limit`) |
 | `GET /regularite/stats` | Moyennes par type de ligne |
+| `GET /metrics` | Métriques Prometheus (requêtes, latence par endpoint) |
+
+## Monitoring (Prometheus + Grafana)
+
+```bash
+docker compose up api prometheus grafana
+```
+
+- Prometheus scrape `GET /metrics` de l'API toutes les 10s (`monitoring/prometheus.yml`)
+- Grafana sur http://localhost:3030 (admin/admin) — datasource et dashboard provisionnés
+  automatiquement (`monitoring/grafana/provisioning/`) : requêtes/s par endpoint, latence p95,
+  total requêtes, erreurs, répartition par statut HTTP
 
 ## Utilisation (Docker)
 
 Un service Compose par environnement (`dev`, `preprod`, `prod`), même image, seule la variable
-`APP_ENV` change. Les dossiers `data/`, `environments/`, `config/`, `tarifs/`, `outputs/` sont
-montés en volumes, donc persistés sur l'hôte entre deux runs.
+`APP_ENV` change. Les dossiers `data/`, `environments/`, `config/`, `outputs/` sont montés en
+volumes, donc persistés sur l'hôte entre deux runs.
 
 ```bash
 docker compose run --rm dev
@@ -112,22 +140,26 @@ Ne jamais écrire les résultats du dossier depuis **dev** : toujours repasser p
 docs/                   documentation d'architecture du projet
 pipeline/               ingest.py, transform.py, run.py
 api/                    API REST FastAPI (main.py) servant les données du pipeline
+monitoring/             config Prometheus + provisioning Grafana (datasource, dashboard)
 tests/                  tests unitaires (pytest) sur pipeline/transform.py et api/main.py
-analysis/               requêtes SQL, tests statistiques, graphiques (à venir)
-tarifs/                 échantillon de prix collecté manuellement (à venir)
+analysis/               requêtes SQL, profilage qualité, tests statistiques, graphiques, export des résultats
 config/                 dev.yaml / preprod.yaml / prod.yaml
 environments/           bases DuckDB par environnement (non versionnées)
 data/raw/               CSV téléchargés depuis data.gouv.fr (non versionnés, régénérables via ingest.py)
 data/processed/         données nettoyées (non versionné)
 outputs/                résultats/graphiques/stats définitifs (issus de l'environnement prod)
-dossier/                dossier mis à jour avec les résultats réels
 ```
 
 ## Données sources
 
-3 jeux de données régularité mensuelle SNCF (licence **ODbL**, data.gouv.fr) : TGV, TER,
-Intercités.
+Toutes sous licence **ODbL** (data.gouv.fr) :
+- Régularité mensuelle SNCF : TGV, TER, Intercités
+- Référentiel des gares (coordonnées GPS)
+- Grilles tarifaires : TGV INOUI/OUIGO, Intercités (prix minimum/maximum par trajet/classe)
 
-Limites connues : la granularité TER est par région (et non par liaison comme TGV/Intercités), le
-retard moyen en minutes n'est disponible que pour le TGV, et le P90 par train n'est pas calculable
-(pas de donnée de retard individuel dans les 3 sources).
+Limites connues :
+- Granularité TER par région (pas par liaison comme TGV/Intercités) ; retard moyen en minutes
+  disponible uniquement pour le TGV ; P90 par train non calculable (pas de donnée individuelle).
+- Le rapprochement par nom entre gares et libellés de liaison est partiel (~41 % des liaisons
+  obtiennent une distance/un prix au km) — gares étrangères, libellés combinés ("ALBI/RODEZ"),
+  variantes de nom trop éloignées ne sont volontairement pas rapprochées (pas de fuzzy matching).
