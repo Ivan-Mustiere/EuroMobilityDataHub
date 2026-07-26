@@ -4,6 +4,17 @@ Pipeline de données réel (Python + DuckDB) produisant les résultats du dossie
 Bloc 2 : un baromètre comparatif de la ponctualité et des tarifs ferroviaires, à partir de vraies
 données ouvertes SNCF.
 
+## Workflow Git
+
+Branche par défaut : **`preprod`** (base de toutes les PR). Branche **`prod`** protégée,
+réservée aux versions validées (résultats définitifs du dossier).
+
+```
+feature/xxx --PR--> preprod --PR--> prod
+```
+
+Les deux branches exigent une PR + le check CI (`build-and-smoke-test`). Pas de push direct.
+
 ## Prérequis
 
 - Python 3.12+, ou Docker + Docker Compose
@@ -53,7 +64,7 @@ propre à chaque environnement et vit dans `config/dev.yaml`, `config/preprod.ya
 Tests unitaires sur `pipeline/transform.py` (harmonisation du schéma des 3 sources, calcul de
 `taux_ponctualite`/`taux_annulation`, gestion des cas à 0 train programmé/circulé, sélection de
 l'échantillon dev) à partir de fixtures CSV réduites dans `tests/fixtures/`. Exécutés en CI à
-chaque push/PR sur `main`, en plus du smoke test end-to-end du pipeline complet.
+chaque push/PR sur `preprod`/`prod`, en plus du smoke test end-to-end du pipeline complet.
 
 ## Utilisation (Docker)
 
