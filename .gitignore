@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+
+# Document de pilotage local, ne doit pas être publié
+claude.md
+
+# Données brutes/traitées régénérables via pipeline/ingest.py et transform.py
+data/raw/
+data/processed/
+environments/*/*.duckdb

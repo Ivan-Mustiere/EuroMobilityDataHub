@@ -1,0 +1,12 @@
+# Environnement PREPROD — validation du pipeline complet avant résultats "officiels"
+env: preprod
+
+database:
+  path: environments/preprod/db_preprod.duckdb
+
+# Jeu de données complet (3 CSV entiers)
+sample:
+  enabled: false
+
+logging:
+  level: INFO

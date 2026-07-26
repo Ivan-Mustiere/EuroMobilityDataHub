@@ -1,0 +1,36 @@
+services:
+  dev:
+    build: .
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      - APP_ENV=dev
+    volumes:
+      - ./data:/app/data
+      - ./environments:/app/environments
+      - ./config:/app/config
+      - ./tarifs:/app/tarifs
+      - ./outputs:/app/outputs
+
+  preprod:
+    build: .
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      - APP_ENV=preprod
+    volumes:
+      - ./data:/app/data
+      - ./environments:/app/environments
+      - ./config:/app/config
+      - ./tarifs:/app/tarifs
+      - ./outputs:/app/outputs
+
+  prod:
+    build: .
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      - APP_ENV=prod
+    volumes:
+      - ./data:/app/data
+      - ./environments:/app/environments
+      - ./config:/app/config
+      - ./tarifs:/app/tarifs
+      - ./outputs:/app/outputs

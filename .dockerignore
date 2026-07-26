@@ -1,0 +1,11 @@
+.git/
+.venv/
+__pycache__/
+*.pyc
+.env
+claude.md
+
+data/raw/
+data/processed/
+environments/
+outputs/

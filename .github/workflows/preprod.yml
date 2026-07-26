@@ -1,0 +1,24 @@
+name: Preprod pipeline
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-preprod:
+    runs-on: ubuntu-latest
+    environment: preprod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pipeline (preprod, jeu de données complet)
+        run: python pipeline/run.py --env preprod

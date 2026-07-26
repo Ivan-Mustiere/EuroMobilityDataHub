@@ -1,0 +1,12 @@
+# Environnement PROD — résultats définitifs reportés dans le dossier
+env: prod
+
+database:
+  path: environments/prod/db_prod.duckdb
+
+# Jeu de données complet, figé à une date donnée
+sample:
+  enabled: false
+
+logging:
+  level: WARNING
