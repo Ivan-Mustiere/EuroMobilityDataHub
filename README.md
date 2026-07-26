@@ -67,6 +67,26 @@ Tests unitaires sur `pipeline/transform.py` (harmonisation du schéma des 3 sour
 l'échantillon dev) à partir de fixtures CSV réduites dans `tests/fixtures/`. Exécutés en CI à
 chaque push/PR sur `preprod`/`prod`, en plus du smoke test end-to-end du pipeline complet.
 
+## API
+
+API REST (FastAPI) qui sert en lecture les données produites par le pipeline (référentiel des
+gares, ponctualité par type de ligne/liaison/mois) — reflète les tables réelles de la couche Gold
+décrite dans le Bloc 1 (`dim_stations`, `fact_regularite`), pas de données factices.
+
+```bash
+APP_ENV=preprod ./.venv/bin/uvicorn api.main:app --reload
+```
+
+Documentation interactive : http://127.0.0.1:8000/docs
+
+| Endpoint | Description |
+|---|---|
+| `GET /health` | Statut + environnement actif |
+| `GET /stations` | Référentiel des gares (`q` = filtre nom, `limit`) |
+| `GET /stations/{station_id}` | Détail d'une gare |
+| `GET /regularite` | Ponctualité/retard (filtres `type_ligne`, `mois`, `axe_label`, `limit`) |
+| `GET /regularite/stats` | Moyennes par type de ligne |
+
 ## Utilisation (Docker)
 
 Un service Compose par environnement (`dev`, `preprod`, `prod`), même image, seule la variable
@@ -77,6 +97,7 @@ montés en volumes, donc persistés sur l'hôte entre deux runs.
 docker compose run --rm dev
 docker compose run --rm preprod --skip-download
 docker compose run --rm prod
+docker compose up api          # sert l'API sur http://localhost:8000 (APP_ENV=preprod par défaut, ajustable via API_ENV)
 ```
 
 Renseigner `HOST_UID`/`HOST_GID` dans `.env` (valeurs par défaut : `id -u`/`id -g`) pour que les
@@ -90,7 +111,8 @@ Ne jamais écrire les résultats du dossier depuis **dev** : toujours repasser p
 ```
 docs/                   documentation d'architecture du projet
 pipeline/               ingest.py, transform.py, run.py
-tests/                  tests unitaires (pytest) sur pipeline/transform.py, fixtures CSV réduites
+api/                    API REST FastAPI (main.py) servant les données du pipeline
+tests/                  tests unitaires (pytest) sur pipeline/transform.py et api/main.py
 analysis/               requêtes SQL, tests statistiques, graphiques (à venir)
 tarifs/                 échantillon de prix collecté manuellement (à venir)
 config/                 dev.yaml / preprod.yaml / prod.yaml

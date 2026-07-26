@@ -34,3 +34,14 @@ services:
       - ./config:/app/config
       - ./tarifs:/app/tarifs
       - ./outputs:/app/outputs
+
+  api:
+    build: .
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      - APP_ENV=${API_ENV:-preprod}
+    entrypoint: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./environments:/app/environments
