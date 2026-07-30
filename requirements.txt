@@ -1,4 +1,7 @@
 annotated-doc==0.0.4
+ipywidgets>=8.1
+notebook>=7.0
+plotly>=5.24
 annotated-types==0.8.0
 anyio==4.14.2
 certifi==2026.7.22
