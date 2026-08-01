@@ -16,6 +16,17 @@ feature/xxx --PR--> preprod --PR--> prod
 
 Les deux branches exigent une PR + le check CI (`build-and-smoke-test`). Pas de push direct.
 
+## Workflow Git
+
+Branche par défaut : **`preprod`** (base de toutes les PR). Branche **`prod`** protégée,
+réservée aux versions validées (résultats définitifs du dossier).
+
+```
+feature/xxx --PR--> preprod --PR--> prod
+```
+
+Les deux branches exigent une PR + le check CI (`build-and-smoke-test`). Pas de push direct.
+
 ## Prérequis
 
 - Python 3.12+, ou Docker + Docker Compose
