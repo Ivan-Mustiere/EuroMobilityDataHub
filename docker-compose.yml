@@ -8,7 +8,6 @@ services:
       - ./data:/app/data
       - ./environments:/app/environments
       - ./config:/app/config
-      - ./tarifs:/app/tarifs
       - ./outputs:/app/outputs
 
   preprod:
@@ -20,7 +19,6 @@ services:
       - ./data:/app/data
       - ./environments:/app/environments
       - ./config:/app/config
-      - ./tarifs:/app/tarifs
       - ./outputs:/app/outputs
 
   prod:
@@ -32,5 +30,53 @@ services:
       - ./data:/app/data
       - ./environments:/app/environments
       - ./config:/app/config
-      - ./tarifs:/app/tarifs
       - ./outputs:/app/outputs
+
+  api:
+    build: .
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      - APP_ENV=${API_ENV:-preprod}
+    entrypoint: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./environments:/app/environments
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3030:3000"
+    depends_on:
+      - prometheus
+
+  # Dashboard métier (C2.1.3) — équivalent open source de Power BI
+  # Prérequis : bash monitoring/metabase/download_driver.sh
+  metabase:
+    build:
+      context: ./monitoring/metabase
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./environments:/environments
+      - metabase-data:/metabase-data
+
+volumes:
+  metabase-data:
