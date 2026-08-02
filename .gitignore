@@ -15,5 +15,6 @@ environments/*/*.duckdb
 # Sorties intermédiaires (preprod/dev) régénérables — seul l'instantané horodaté officiel
 # généré depuis prod (outputs/prod_YYYY-MM-DD/) est versionné, pour tracer ce qui a servi
 # de base au dossier déposé (cf. section Environnements du document de pilotage local)
+temp/*
 outputs/*
 !outputs/prod_*/
