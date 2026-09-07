@@ -1,13 +1,18 @@
-# Zone "DMZ" (Bloc 1, Tableau 13) : API Gateway HTTP API, seul point d'entrée public vers l'API
-# FastAPI. Intégration privée via VPC Link + Network Load Balancer interne (pas de nom DNS/IP
-# publique) : l'instance Applicative devient injoignable directement depuis internet — voir la
-# règle retirée dans vpc.tf (aws_security_group.ec2_applicative) et la nouvelle limitée au VPC.
+# Zone "DMZ" (Bloc 1, Tableau 14 : 10.0.1.0/24, "API Gateway, Load Balancer"). API Gateway
+# lui-même est un service managé hors VPC (non déplaçable dans un sous-réseau, quel que soit le
+# fournisseur cloud) ; le NLB, lui, est placé dans le vrai sous-réseau DMZ (aws_subnet.dmz,
+# cf. vpc.tf) alors que sa cible (l'instance Applicative) reste dans le sous-réseau Applicative —
+# un NLB peut cibler une instance dans un autre sous-réseau de la même VPC, c'est justement ce qui
+# matérialise la frontière entre les deux zones. Intégration privée via VPC Link + NLB interne
+# (pas d'IP publique) : l'instance Applicative devient injoignable directement depuis internet —
+# voir la règle retirée dans vpc.tf (aws_security_group.ec2_applicative) et la nouvelle limitée
+# au VPC.
 
 resource "aws_lb" "api_internal" {
   name               = "${local.name_prefix}-api-nlb"
   internal           = true # pas d'IP publique : joignable uniquement via le VPC Link
   load_balancer_type = "network"
-  subnets            = [aws_subnet.applicative.id]
+  subnets            = [aws_subnet.dmz.id]
 
   tags = { Name = "${local.name_prefix}-api-nlb" }
 }
@@ -64,7 +69,7 @@ resource "aws_security_group" "vpc_link" {
 resource "aws_apigatewayv2_vpc_link" "main" {
   name               = "${local.name_prefix}-vpc-link"
   security_group_ids = [aws_security_group.vpc_link.id]
-  subnet_ids         = [aws_subnet.applicative.id]
+  subnet_ids         = [aws_subnet.dmz.id]
 
   tags = { Name = "${local.name_prefix}-vpc-link" }
 }

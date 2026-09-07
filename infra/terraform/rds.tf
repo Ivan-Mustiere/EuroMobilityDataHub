@@ -8,6 +8,20 @@ resource "aws_db_subnet_group" "donnees" {
   subnet_ids = [aws_subnet.donnees.id, aws_subnet.donnees_secondary.id]
 }
 
+# SSL obligatoire Applicative -> Données (Bloc 1, partie 5.2/b : "PostgreSQL via SSL obligatoire,
+# sslmode=require"). rds.force_ssl est un paramètre dynamique (pas de redémarrage requis) : le
+# serveur rejette toute connexion en clair dès l'application du paramètre.
+resource "aws_db_parameter_group" "donnees" {
+  name        = "${local.name_prefix}-donnees-pg16"
+  family      = "postgres16"
+  description = "Force SSL sur les connexions PostgreSQL (Bloc 1, partie 5.2/b)"
+
+  parameter {
+    name  = "rds.force_ssl"
+    value = "1"
+  }
+}
+
 resource "random_password" "rds_master" {
   length  = 24
   special = false # évite les caractères qui nécessitent un échappement dans une URL de connexion
@@ -18,15 +32,28 @@ resource "aws_secretsmanager_secret" "rds_credentials" {
   description = "Identifiants de connexion RDS PostgreSQL (couche Silver temps réel)"
 }
 
+# Format JSON standard attendu par la Lambda de rotation AWS (voir secrets_rotation.tf) : la
+# rotation "single user" gère elle-même le cycle password ancien/nouveau et écrase la valeur
+# "password" ci-dessous à chaque rotation (dernier bloc "AWSCURRENT" du secret). Les clés
+# PG*/majuscules attendues par consumer.py et le bootstrap EC2 sont reconstruites à partir de
+# celles-ci (cf. ec2_user_data.sh.tftpl), jamais l'inverse.
 resource "aws_secretsmanager_secret_version" "rds_credentials" {
   secret_id = aws_secretsmanager_secret.rds_credentials.id
   secret_string = jsonencode({
-    PGHOST     = aws_db_instance.donnees.address
-    PGPORT     = aws_db_instance.donnees.port
-    PGDATABASE = aws_db_instance.donnees.db_name
-    PGUSER     = aws_db_instance.donnees.username
-    PGPASSWORD = random_password.rds_master.result
+    engine   = "postgres"
+    host     = aws_db_instance.donnees.address
+    port     = aws_db_instance.donnees.port
+    dbname   = aws_db_instance.donnees.db_name
+    username = aws_db_instance.donnees.username
+    password = random_password.rds_master.result
   })
+
+  # La rotation (secrets_rotation.tf) modifie ce secret en dehors de Terraform : ignorer les
+  # dérives sur secret_string évite qu'un apply ultérieur n'écrase le mot de passe tourné par
+  # Lambda avec l'ancien random_password.rds_master figé dans le state.
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 resource "aws_db_instance" "donnees" {
@@ -44,6 +71,7 @@ resource "aws_db_instance" "donnees" {
   password = random_password.rds_master.result
 
   db_subnet_group_name   = aws_db_subnet_group.donnees.name
+  parameter_group_name   = aws_db_parameter_group.donnees.name
   vpc_security_group_ids = [aws_security_group.rds_donnees.id]
   publicly_accessible    = false
   multi_az               = false # Single-AZ assumé (cf. vpc.tf) — build démo, pas un SLA de prod
@@ -55,4 +83,11 @@ resource "aws_db_instance" "donnees" {
   skip_final_snapshot     = true
   deletion_protection     = false
   apply_immediately       = true
+
+  # La rotation Secrets Manager (secrets_rotation.tf) change le mot de passe réel sur RDS
+  # directement, hors Terraform : sans ceci, le prochain apply réécraserait ce mot de passe tourné
+  # avec l'ancien random_password.rds_master figé dans le state, cassant l'accès pour de vrai.
+  lifecycle {
+    ignore_changes = [password]
+  }
 }

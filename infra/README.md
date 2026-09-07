@@ -8,9 +8,9 @@ build d'une semaine et non une infra permanente — voir "Destroy" en fin de doc
 
 ```
 GTFS-RT SNCF (public, sans clé) --> Kafka (EC2) --> Postgres RDS (fact_realtime, Silver temps réel)
-CSV SNCF (data.gouv.fr) --> pipeline/ingest.py --> pipeline/transform.py --> DuckDB local
-                                                 --> pipeline/load_cloud.py --> S3 "bronze" --> Snowflake STAGING (Silver) --dbt--> MART (Gold)
-Airflow (EC2) orchestre ingest -> transform -> load_cloud, hebdomadaire (cf. cloud/airflow/dags/)
+CSV SNCF (data.gouv.fr) --> apps/pipeline/ingest.py --> apps/pipeline/transform.py --> DuckDB local
+                                                 --> apps/pipeline/load_cloud.py --> S3 "bronze" --> Snowflake STAGING (Silver) --dbt--> MART (Gold)
+Airflow (EC2) orchestre ingest -> transform -> load_cloud, hebdomadaire (cf. infra/cloud/airflow/dags/)
 Internet --> API Gateway (DMZ) --> VPC Link --> NLB interne --> EC2 Applicative:8000 (api)
 ```
 
@@ -23,11 +23,13 @@ Internet --> API Gateway (DMZ) --> VPC Link --> NLB interne --> EC2 Applicative:
 | Budget guardrail | AWS | `budget.tf` |
 | Secrets (Snowflake, RDS, clé API) | AWS | `secrets.tf`, `rds.tf` |
 | RDS PostgreSQL (Silver temps réel) | AWS | `rds.tf` |
+| Rotation automatique du secret RDS (30 jours) | AWS | `secrets_rotation.tf` |
 | EC2 Applicative (Kafka + Airflow + API) | AWS | `ec2.tf` |
 | Bastion SSH (zone Administration) | AWS | `bastion.tf` |
 | API Gateway + VPC Link + NLB (zone DMZ) | AWS | `dmz.tf` |
 | Warehouse, database, rôles RBAC | Snowflake | `snowflake.tf` |
-| Kafka, producer/consumer GTFS-RT, API, DAG Airflow | applicatif (déployé sur l'EC2) | `../cloud/` |
+| Kafka, DAG Airflow, docker-compose de déploiement | applicatif (déployé sur l'EC2) | `cloud/` |
+| Producer/consumer Kafka GTFS-RT | applicatif (déployé sur l'EC2) | `../apps/streaming/` |
 
 ## Environnements (preprod / prod)
 
@@ -125,29 +127,77 @@ deux workspaces.
 
 ## Zonage réseau : 4 zones sur 4
 
-Le Bloc 1 décrit 4 zones (DMZ / Applicative / Données / Administration), toutes déployées :
-- **Applicative** → subnet **public** (pas de NAT Gateway, économie assumée). Héberge l'EC2
-  (Kafka, Airflow, service API) — **plus joignable directement depuis internet** sur le port
-  8000 depuis l'introduction de la DMZ (le security group `ec2_applicative` ne l'autorise plus
-  que depuis le CIDR du VPC, cf. `vpc.tf`).
-- **Données** → subnet **privé**, joignable depuis le security group Applicative ET depuis le
-  bastion (ci-dessous). Héberge RDS.
-- **Administration** → subnet **public** (`10.0.1.0/24`), héberge un **bastion SSH**
-  (`bastion.tf`) : accès restreint à `my_ip_cidr`, rebond direct vers RDS via `psql`. Clé SSH
-  générée hors Terraform (`~/.ssh/euromobilitydatahub_bastion_key[-prod]`, jamais dans le state).
-  Coexiste avec **SSM** (toujours actif sur l'instance Applicative) plutôt que de le remplacer —
-  les deux mécanismes d'accès admin du Bloc 1 (bastion et agent managé) sont ainsi réellement
-  démontrés côte à côte, pas juste l'un ou l'autre.
-- **DMZ** (`dmz.tf`) → pas de subnet dédié (API Gateway est un service managé hors VPC) : seul
-  point d'entrée public vers l'API — **API Gateway (HTTP API) → VPC Link → Network Load
-  Balancer interne (sans IP publique) → EC2 Applicative:8000**. Clé API réelle générée par
-  Terraform et stockée dans Secrets Manager (`secrets.tf`, `api_key`), plus la clé de démo en
-  dur du docker-compose racine.
+Le Bloc 1 décrit 4 zones (DMZ / Applicative / Données / Administration) avec des CIDR précis
+(Tableau 14), toutes déployées avec ces CIDR à une exception documentée près :
 
-Se connecter au bastion :
+| Zone | CIDR | Composants | Accès autorisé |
+|---|---|---|---|
+| DMZ (publique) | `10.0.1.0/24` | NLB interne (`dmz.tf`) | Internet → DMZ uniquement |
+| Applicative | `10.0.2.0/24` | EC2 : Airflow, Kafka, API (`ec2.tf`) | DMZ → Applicative |
+| Données | `10.0.3.0/24` | RDS, VPC Endpoint S3 | Applicative → Données |
+| Administration | `10.0.6.0/24` *(voir écart ci-dessous)* | Bastion SSH (`bastion.tf`) | VPN admin uniquement |
+
+**Écart CIDR documenté** : le Tableau 14 place Administration sur `10.0.4.0/24`. En pratique, ce
+CIDR est occupé par un second subnet privé technique (`donnees_secondary`, exigé par RDS pour son
+DB subnet group, ≥ 2 AZ même en Single-AZ). Constaté en conditions réelles : l'instance RDS
+tourne dans l'AZ de ce subnet, et AWS refuse de libérer son ENI pour permettre un changement de
+CIDR (`ModifyDBSubnetGroup` échoue avec *"subnets to be deleted are currently in use"*, même avec
+`create_before_destroy`) — le libérer exigerait de déplacer l'instance RDS de production vers une
+autre AZ (Multi-AZ temporaire + failover, ou snapshot/restore), un risque jugé disproportionné
+pour une base contenant des données réelles et irremplaçables (`fact_realtime`, alimentée en
+continu par le consumer Kafka). Administration a donc été placée sur `10.0.6.0/24`, un CIDR libre,
+plutôt que de risquer la base — cf. commentaire détaillé en tête de `vpc.tf`.
+
+Détail par zone :
+- **Applicative** → subnet public (pas de NAT Gateway, économie assumée). Héberge l'EC2 (Kafka,
+  Airflow, service API) — **plus joignable directement depuis internet** sur le port 8000 depuis
+  l'introduction de la DMZ (le security group `ec2_applicative` ne l'autorise plus que depuis le
+  CIDR du VPC, cf. `vpc.tf`).
+- **Données** → subnet privé, joignable depuis le security group Applicative ET depuis le bastion
+  (ci-dessous). Héberge RDS, avec **SSL obligatoire** (`rds.force_ssl = 1` via
+  `aws_db_parameter_group`, cf. `rds.tf`) : une connexion `sslmode=disable` est rejetée par
+  Postgres (*"no pg_hba.conf entry ..., no encryption"*), seul `sslmode=require`/`prefer` passe.
+- **Administration** → subnet public (`10.0.6.0/24`), héberge un **bastion SSH derrière un VPN
+  WireGuard** (`bastion.tf`) : le security group n'ouvre que le port UDP/51820 (WireGuard) depuis
+  `my_ip_cidr` — **aucune règle sur le port 22**, SSH n'écoute que sur l'interface du tunnel
+  (`10.99.0.1`, cf. `templates/bastion_user_data.sh.tftpl`). Rebond direct vers RDS via `psql` une
+  fois dans le tunnel. Clés SSH et WireGuard générées hors Terraform (jamais dans le state) :
+  `~/.ssh/euromobilitydatahub_bastion_key[-prod]` et `~/.wireguard/{server,client}_*.key[-prod]`.
+  Coexiste avec **SSM** (toujours actif sur l'instance Applicative) plutôt que de le remplacer —
+  les deux mécanismes d'accès admin du Bloc 1 (VPN+bastion et agent managé) sont ainsi réellement
+  démontrés côte à côte, pas juste l'un ou l'autre.
+- **DMZ** (`10.0.1.0/24`, `dmz.tf`) → héberge le NLB interne (sans IP publique). L'API Gateway
+  elle-même (service managé AWS, toujours hors VPC) n'est pas déplaçable dans un subnet. Seul
+  point d'entrée public vers l'API : **API Gateway (HTTP API) → VPC Link → NLB (subnet DMZ) → EC2
+  Applicative:8000**. Clé API réelle générée par Terraform et stockée dans Secrets Manager
+  (`secrets.tf`, `api_key`), plus la clé de démo en dur du docker-compose racine.
+
+Se connecter au bastion (VPN WireGuard puis SSH, cf. config client à générer à partir de
+`~/.wireguard/client_private.key[-prod]` + `~/.wireguard/server_public.key[-prod]` +
+`bastion_public_ip:51820`, `AllowedIPs = 10.99.0.1/32`) :
 ```bash
-ssh -i ~/.ssh/euromobilitydatahub_bastion_key ubuntu@$(terraform output -raw bastion_public_ip)
+sudo wg-quick up ./wg0-client.conf
+ssh -i ~/.ssh/euromobilitydatahub_bastion_key ubuntu@10.99.0.1
 ```
+
+## Rotation automatique du secret RDS
+
+Le mot de passe RDS tourne automatiquement tous les 30 jours (`secrets_rotation.tf`), via l'app
+AWS officielle du Serverless Application Repository (`SecretsManagerRDSPostgreSQLRotationSingleUser`)
+plutôt qu'une Lambda maison. Cette Lambda tourne dans le VPC (subnet Données) et atteint l'API
+Secrets Manager via un **VPC Interface Endpoint** dédié — ce VPC n'a pas de NAT Gateway (économie
+assumée), donc pas d'autre chemin sortant depuis un subnet privé.
+
+Point important : le secret change de format pour respecter le schéma standard attendu par cette
+Lambda (`host`/`port`/`dbname`/`username`/`password`, plus `engine`), différent des clés
+`PG*`/majuscules historiques. `consumer.py` (seul composant qui parle à RDS) relit ce secret via
+`boto3` **à chaque reconnexion** plutôt que de garder un mot de passe figé au démarrage du
+conteneur — indispensable pour survivre à une rotation sans redémarrage manuel (vérifié en
+conditions réelles : la première activation de la rotation change le mot de passe immédiatement,
+et le consumer a continué à écrire dans `fact_realtime` sans interruption ni intervention).
+`aws_db_instance.donnees` et `aws_secretsmanager_secret_version.rds_credentials` ignorent les
+dérives sur le mot de passe (`lifecycle.ignore_changes`) pour ne jamais écraser un mot de passe
+tourné avec l'ancien `random_password.rds_master` figé dans le state Terraform.
 
 Appeler l'API via la DMZ (seul chemin qui fonctionne désormais) :
 ```bash
@@ -159,21 +209,22 @@ curl -H "X-API-Key: $API_KEY" "$(terraform output -raw api_gateway_url)stations?
 ## Ce qui tourne sur l'EC2
 
 Bootstrap (`templates/ec2_user_data.sh.tftpl`, exécuté une seule fois au premier démarrage) :
-installe Docker, récupère `../cloud/` + `../api/` + `../Dockerfile` + `../requirements.txt`
-(empaquetés automatiquement par Terraform à chaque apply via `data.archive_file.cloud_bundle`,
-jamais d'étape manuelle), récupère les secrets, initialise le schéma Postgres, puis
-`docker compose up -d`. Les conteneurs (`restart: unless-stopped`) survivent à un redémarrage de
-l'instance sans réexécuter le bootstrap.
+installe Docker, récupère un bundle miroir exact du dépôt (`cloud/` = `infra/cloud/`,
+`../apps/pipeline/`, `../apps/api/`, `../apps/streaming/`, `../Dockerfile`,
+`../requirements.txt` — empaquetés automatiquement par Terraform à chaque apply via
+`data.archive_file.cloud_bundle`, jamais d'étape manuelle), récupère les secrets, initialise le
+schéma Postgres, puis `docker compose up -d`. Les conteneurs (`restart: unless-stopped`)
+survivent à un redémarrage de l'instance sans réexécuter le bootstrap.
 
-Services (`../cloud/docker-compose.yml`) :
-- **api** : l'API FastAPI (`../../api/main.py`), seule cible du NLB de la DMZ — plus reçue
+Services (`cloud/docker-compose.yml`) :
+- **api** : l'API FastAPI (`../apps/api/main.py`), seule cible du NLB de la DMZ — plus reçue
   directement depuis internet (cf. "Zonage réseau" plus haut). Lit `environments/preprod/`
   (le DAG écrit toujours dans cet environnement, quel que soit l'environnement AWS).
 - **kafka** (KRaft mono-nœud) + **producer** (poll le flux GTFS-RT public SNCF toutes les 2 min)
-  + **consumer** (upsert dans `fact_realtime`, RDS).
+  + **consumer** (upsert dans `fact_realtime`, RDS) — cf. `../apps/streaming/`.
 - **airflow** (mode `standalone`, léger) : DAG hebdomadaire `euromobilitydatahub_batch`
-  (ingest -> transform -> load_cloud -> dbt), cf. `../cloud/airflow/dags/pipeline_dag.py`.
-  dbt (`../../dbt/`) promeut STAGING -> MART (2 modèles, 5 tests, cf. `dbt/models/marts/`) ;
+  (ingest -> transform -> load_cloud -> dbt), cf. `cloud/airflow/dags/pipeline_dag.py`.
+  dbt (`../dbt/`) promeut STAGING -> MART (2 modèles, 5 tests, cf. `dbt/models/marts/`) ;
   nécessite que les dossiers montés en volume (`data/`, `environments/`, `config/`, `dbt/`) restent
   accessibles en écriture à l'utilisateur non-root du conteneur Airflow (uid 50000) — d'où le
   `chmod 777` sur ces dossiers dans le bootstrap.
@@ -182,7 +233,7 @@ Vérifier depuis un poste local (pas de SSH — SSM uniquement) :
 ```bash
 aws ssm start-session --target <instance-id>
 # puis, sur l'instance :
-docker compose -f /opt/euromobilitydatahub/cloud/docker-compose.yml ps
+docker compose -f /opt/euromobilitydatahub/infra/cloud/docker-compose.yml ps
 docker logs -f consumer   # ou producer, airflow, kafka
 ```
 
@@ -195,9 +246,9 @@ périmé si le dossier source a été supprimé/recréé entre-temps. Utiliser
 
 Tester la stack Kafka/Postgres **en local sans AWS**, avant tout déploiement :
 ```bash
-cd cloud && docker compose --profile local-test up -d --build
+cd infra/cloud && docker compose --profile local-test up -d --build
 ```
-(utilise `postgis/postgis` en conteneur jetable au lieu de RDS — voir `cloud/local-test/`).
+(utilise `postgis/postgis` en conteneur jetable au lieu de RDS — voir `infra/cloud/local-test/`).
 
 ## Limites assumées (dette technique explicite, pas des oublis)
 
