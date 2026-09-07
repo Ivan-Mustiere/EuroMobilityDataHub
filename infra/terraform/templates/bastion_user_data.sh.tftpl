@@ -1,0 +1,6 @@
+#!/bin/bash
+# Bootstrap minimal : le bastion n'a qu'un rôle, servir de rebond admin. psql pour se connecter
+# directement à RDS (cf. aws_security_group.rds_donnees, règle dédiée au bastion).
+set -euxo pipefail
+apt-get update -y
+apt-get install -y postgresql-client

@@ -34,6 +34,11 @@ output "environment" {
   value = var.environment
 }
 
+output "bastion_public_ip" {
+  description = "Se connecter : ssh -i ~/.ssh/euromobilitydatahub_bastion_key<suffixe env> ubuntu@<ip>"
+  value       = aws_instance.bastion.public_ip
+}
+
 output "snowflake_database_name" {
   value = snowflake_database.main.name
 }

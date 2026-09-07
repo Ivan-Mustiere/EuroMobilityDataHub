@@ -1,12 +1,15 @@
 # Zonage réseau simplifié par rapport au Bloc 1 (4 zones : DMZ / Applicative / Données /
-# Administration). Ce build n'en déploie que 2, pour un motif documenté (voir infra/README.md) :
-#   - "Applicative" -> devient un subnet PUBLIC (pas de NAT Gateway, cf. décision coût du plan).
+# Administration). Ce build en déploie 3 sur 4, pour un motif documenté (voir infra/README.md) :
+#   - "Applicative" -> subnet PUBLIC (pas de NAT Gateway, cf. décision coût du plan).
 #     Héberge l'instance EC2 Airflow+Kafka + l'API cloud de démo.
-#   - "Données"      -> reste un subnet PRIVÉ. Héberge RDS PostgreSQL, joignable uniquement
-#     depuis le security group de l'instance Applicative.
-#   - "DMZ" (API Gateway dédiée) et "Administration" (bastion+VPN) ne sont pas déployées :
-#     l'API de démo tourne directement sur l'instance Applicative, et l'accès admin passe par
-#     AWS Systems Manager Session Manager (aucun bastion/VPN nécessaire, zéro port entrant).
+#   - "Données"      -> subnet PRIVÉ. Héberge RDS PostgreSQL, joignable uniquement depuis le
+#     security group de l'instance Applicative (et désormais du bastion, cf. bastion.tf).
+#   - "Administration" -> subnet PUBLIC, héberge le bastion SSH (bastion.tf) : accès admin
+#     restreint à my_ip_cidr, rebond direct vers RDS (psql). Coexiste avec SSM (toujours actif
+#     sur l'instance Applicative) plutôt que de le remplacer — les deux mécanismes d'accès admin
+#     du Bloc 1 (bastion et agent managé) sont ainsi tous deux réellement démontrés.
+#   - "DMZ" (API Gateway dédiée) n'est pas déployée : l'API de démo tourne directement sur
+#     l'instance Applicative.
 
 data "aws_availability_zones" "available" {
   state = "available"
@@ -48,6 +51,21 @@ resource "aws_route_table" "public" {
 
 resource "aws_route_table_association" "applicative" {
   subnet_id      = aws_subnet.applicative.id
+  route_table_id = aws_route_table.public.id
+}
+
+# --- Subnet public "Administration" (10.0.1.0/24, cf. Bloc 1 Table 13) : héberge le bastion ---
+
+resource "aws_subnet" "administration" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.1.0/24"
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = true
+  tags                    = { Name = "${var.project_name}-administration-public" }
+}
+
+resource "aws_route_table_association" "administration" {
+  subnet_id      = aws_subnet.administration.id
   route_table_id = aws_route_table.public.id
 }
 
@@ -136,6 +154,16 @@ resource "aws_security_group" "rds_donnees" {
     to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.ec2_applicative.id]
+  }
+
+  # Bastion (zone Administration, cf. bastion.tf) : rebond admin direct vers RDS (psql), sans
+  # passer par l'instance Applicative.
+  ingress {
+    description     = "PostgreSQL depuis le bastion (zone Administration)"
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.bastion.id]
   }
 
   egress {

@@ -23,6 +23,7 @@ Airflow (EC2) orchestre ingest -> transform -> load_cloud, hebdomadaire (cf. clo
 | Secrets (Snowflake, RDS) | AWS | `secrets.tf`, `rds.tf` |
 | RDS PostgreSQL (Silver temps réel) | AWS | `rds.tf` |
 | EC2 Applicative (Kafka + Airflow) | AWS | `ec2.tf` |
+| Bastion SSH (zone Administration) | AWS | `bastion.tf` |
 | Warehouse, database, rôles RBAC | Snowflake | `snowflake.tf` |
 | Kafka, producer/consumer GTFS-RT, DAG Airflow | applicatif (déployé sur l'EC2) | `../cloud/` |
 
@@ -85,6 +86,12 @@ une révocation indépendante par environnement.
    ```
 4. **`terraform.tfvars` / `prod.tfvars`** (gitignorés, copier les `.example`) : IP publique,
    email d'alerte budget, identifiants de compte Snowflake (non sensibles).
+5. **Clé SSH du bastion (par environnement)** : générée hors Terraform, jamais dans le state
+   (`bastion.tf` ne lit que la clé publique) :
+   ```bash
+   ssh-keygen -t ed25519 -f ~/.ssh/euromobilitydatahub_bastion_key[-prod] -N "" \
+     -C "euromobilitydatahub-bastion"
+   ```
 
 Ordre conceptuel : le garde-fou budgétaire (`budget.tf`) est ce qu'on veut avoir en premier avant
 toute ressource facturable — dans ce build, tout est appliqué en un seul `terraform apply` par
@@ -110,17 +117,26 @@ quota de la première (preprod) est consommé. Décision explicite prise avec le
 accepter le dépassement plutôt que découper l'infra, le temps de la démo/certification, puis
 `destroy` les deux workspaces.
 
-## Zonage réseau : 2 zones sur 4
+## Zonage réseau : 3 zones sur 4
 
-Le Bloc 1 décrit 4 zones (DMZ / Applicative / Données / Administration). Ce build n'en déploie
-que 2 :
+Le Bloc 1 décrit 4 zones (DMZ / Applicative / Données / Administration). Ce build en déploie 3 :
 - **Applicative** → subnet **public** (pas de NAT Gateway, économie assumée). Héberge l'EC2
   (Kafka, Airflow, API cloud de démo).
-- **Données** → subnet **privé**, joignable uniquement depuis le security group Applicative.
-  Héberge RDS.
-- **DMZ** (API Gateway dédiée) et **Administration** (bastion/VPN) ne sont pas déployées :
-  l'API tourne directement sur l'instance Applicative, et l'accès admin passe par AWS Systems
-  Manager Session Manager — zéro port entrant, zéro bastion à maintenir.
+- **Données** → subnet **privé**, joignable depuis le security group Applicative ET depuis le
+  bastion (ci-dessous). Héberge RDS.
+- **Administration** → subnet **public** (`10.0.1.0/24`), héberge un **bastion SSH**
+  (`bastion.tf`) : accès restreint à `my_ip_cidr`, rebond direct vers RDS via `psql`. Clé SSH
+  générée hors Terraform (`~/.ssh/euromobilitydatahub_bastion_key[-prod]`, jamais dans le state).
+  Coexiste avec **SSM** (toujours actif sur l'instance Applicative) plutôt que de le remplacer —
+  les deux mécanismes d'accès admin du Bloc 1 (bastion et agent managé) sont ainsi réellement
+  démontrés côte à côte, pas juste l'un ou l'autre.
+- **DMZ** (API Gateway dédiée) n'est pas déployée : l'API tourne directement sur l'instance
+  Applicative.
+
+Se connecter au bastion :
+```bash
+ssh -i ~/.ssh/euromobilitydatahub_bastion_key ubuntu@$(terraform output -raw bastion_public_ip)
+```
 
 ## Ce qui tourne sur l'EC2
 

@@ -42,6 +42,12 @@ variable "ec2_instance_type" {
   default     = "m7i-flex.large"
 }
 
+variable "bastion_instance_type" {
+  description = "Type d'instance pour le bastion SSH (zone Administration, cf. bastion.tf) — doit être éligible Free Tier"
+  type        = string
+  default     = "t3.micro"
+}
+
 variable "rds_instance_class" {
   description = "Classe RDS PostgreSQL"
   type        = string
