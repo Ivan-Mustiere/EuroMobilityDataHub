@@ -1,6 +1,6 @@
 """Point d'entrée du pipeline : ingestion puis transformation, pour un environnement donné.
 
-Usage : python pipeline/run.py [--env dev|preprod|prod]
+Usage : python apps/pipeline/run.py [--env dev|preprod|prod]
 Si --env est omis, la valeur vient de APP_ENV dans .env (défaut : dev).
 """
 

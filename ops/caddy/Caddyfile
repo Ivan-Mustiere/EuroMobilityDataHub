@@ -1,0 +1,14 @@
+# Chiffrement en transit (C1.4.2) démontré en local : Caddy termine le TLS avec sa CA interne
+# (pas de nom de domaine requis) et relaie en clair vers l'API sur le réseau Docker interne.
+# Le navigateur affichera un avertissement de certificat non reconnu (CA locale, pas publique) —
+# attendu pour une démo sans domaine. En cloud, remplacer "tls internal" par un domaine réel +
+# Let's Encrypt (une ligne à changer), ou par un certificat ACM devant une vraie instance EC2.
+#
+# Hostname statique ("localhost", pas ":8443" seul) volontaire : Caddy ne provisionne un
+# certificat "tls internal" au démarrage que pour un nom connu à l'avance — un bloc catch-all
+# sans nom exigerait de configurer explicitement l'émission "on demand" (avec son garde-fou
+# anti-abus), disproportionné pour cette démo locale.
+localhost:8443 {
+	tls internal
+	reverse_proxy api:8000
+}

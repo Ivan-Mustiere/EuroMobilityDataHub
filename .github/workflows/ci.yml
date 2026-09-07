@@ -26,7 +26,7 @@ jobs:
         run: pytest tests/ -v
 
       - name: Smoke test pipeline (dev)
-        run: python pipeline/run.py --env dev
+        run: python apps/pipeline/run.py --env dev
 
       - name: Build Docker image
         run: docker build -t euromobilitydatahub:ci .

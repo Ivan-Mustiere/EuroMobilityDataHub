@@ -1,0 +1,27 @@
+#!/bin/bash
+# Bastion + VPN WireGuard (Bloc 1, partie 5.2/b : "les administrateurs se connectent via un VPN
+# WireGuard puis via un hôte Bastion SSH"). SSH n'écoute qu'à l'intérieur du tunnel WireGuard
+# (10.99.0.1) : le security group (bastion.tf) n'ouvre plus que le port UDP du VPN depuis
+# my_ip_cidr, jamais le port 22 directement.
+set -euxo pipefail
+apt-get update -y
+apt-get install -y postgresql-client wireguard
+
+mkdir -p /etc/wireguard
+cat > /etc/wireguard/wg0.conf <<WGEOF
+[Interface]
+Address = 10.99.0.1/24
+ListenPort = 51820
+PrivateKey = ${wg_server_private_key}
+
+[Peer]
+PublicKey = ${wg_client_public_key}
+AllowedIPs = 10.99.0.2/32
+WGEOF
+chmod 600 /etc/wireguard/wg0.conf
+systemctl enable --now wg-quick@wg0
+
+# SSH restreint à l'interface du tunnel uniquement (plus d'écoute sur l'IP publique/VPC).
+sed -i '/^ListenAddress/d; /^#ListenAddress/d' /etc/ssh/sshd_config
+echo "ListenAddress 10.99.0.1" >> /etc/ssh/sshd_config
+systemctl restart ssh

@@ -1,0 +1,15 @@
+# Copier en prod.tfvars (gitignored) et adapter — voir infra/README.md, section environnements.
+#   terraform workspace new prod   # une seule fois
+#   terraform workspace select prod
+#   terraform apply -var-file=prod.tfvars
+environment                 = "prod"
+aws_region                  = "eu-west-3"
+project_name                = "euromobilitydatahub"
+my_ip_cidr                  = "203.0.113.42/32" # `curl -s https://checkip.amazonaws.com` puis ajouter /32
+budget_alert_email          = "toi@example.com"
+budget_limit_usd            = 20
+ec2_instance_type           = "m7i-flex.large" # Free Tier non cumulatif entre instances, voir infra/README.md
+rds_instance_class          = "db.t3.micro"
+enable_guardduty            = false
+snowflake_organization_name = "tqjwlut"
+snowflake_account_name      = "ke07809"

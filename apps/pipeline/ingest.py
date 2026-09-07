@@ -9,7 +9,7 @@ import pathlib
 
 import requests
 
-RAW_DIR = pathlib.Path(__file__).resolve().parent.parent / "data" / "raw"
+RAW_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "data" / "raw"
 
 SOURCES = {
     "regularite_tgv.csv": "https://www.data.gouv.fr/api/1/datasets/r/91fe399d-cafa-4e72-8ba3-56d8717fdad4",

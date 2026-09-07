@@ -1,0 +1,5 @@
+kafka-python-ng==2.2.3
+requests==2.34.2
+gtfs-realtime-bindings==2.2.0
+psycopg[binary]==3.2.4
+boto3==1.35.99

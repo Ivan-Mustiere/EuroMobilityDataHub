@@ -24,7 +24,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run pipeline (prod, résultats définitifs)
-        run: python pipeline/run.py --env prod
+        run: python apps/pipeline/run.py --env prod
 
       - name: Tag production run
         run: |

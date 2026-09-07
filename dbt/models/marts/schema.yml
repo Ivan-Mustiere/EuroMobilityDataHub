@@ -1,0 +1,23 @@
+version: 2
+
+models:
+  - name: dim_stations
+    description: Référentiel des gares SNCF (Gold).
+    columns:
+      - name: station_id
+        tests:
+          - unique
+          - not_null
+
+  - name: fact_regularite
+    description: Ponctualité/annulations harmonisées TGV/TER/Intercités (Gold).
+    columns:
+      - name: mois
+        tests:
+          - not_null
+      - name: type_ligne
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["grande_vitesse", "regional", "intercite"]

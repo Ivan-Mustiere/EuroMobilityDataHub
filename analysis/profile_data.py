@@ -51,7 +51,7 @@ def run() -> list[dict]:
     for filename, outlier_col in SOURCES.items():
         path = RAW_DIR / filename
         if not path.exists():
-            print(f"[profile] {filename} absent (lancer pipeline/ingest.py) — ignoré")
+            print(f"[profile] {filename} absent (lancer apps/pipeline/ingest.py) — ignoré")
             continue
         df = pd.read_csv(path, sep=";", encoding="utf-8-sig")
         report = profile_dataset(df, filename, outlier_col=outlier_col)

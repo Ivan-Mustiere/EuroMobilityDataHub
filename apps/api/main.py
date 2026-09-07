@@ -1,7 +1,7 @@
 """API REST EuroMobilityDataHub — sert les données réelles produites par le pipeline.
 
 Lecture seule sur la base DuckDB de l'environnement APP_ENV (dev|preprod|prod).
-Lancer : uvicorn api.main:app --reload --no-access-log
+Lancer : uvicorn apps.api.main:app --reload --no-access-log
 (--no-access-log : les access logs bruts d'uvicorn contiennent l'IP en clair, remplacés par notre
 propre log anonymisé ci-dessous — cf. politique RGPD décrite dans le Bloc 1, partie 5.1/5.2/d.)
 """
@@ -14,13 +14,21 @@ from typing import Optional
 
 import duckdb
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 load_dotenv()
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 APP_ENV = os.getenv("APP_ENV", "dev")
+
+# Rôle api_consumer (Bloc 1, Tableau 13) : accès en lecture seule aux endpoints de données,
+# identifié par une clé API, avec quotas de requêtes. Pas de clé configurée -> aucun accès
+# (échec fermé), plutôt qu'une API ouverte par erreur de configuration en prod.
+VALID_API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()}
 DB_PATHS = {
     "dev": ROOT / "environments" / "dev" / "db_dev.duckdb",
     "preprod": ROOT / "environments" / "preprod" / "db_preprod.duckdb",
@@ -41,11 +49,43 @@ if not access_logger.handlers:
     _handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     access_logger.addHandler(_handler)
 
+TAGS_METADATA = [
+    {
+        "name": "santé",
+        "description": "Vérification de l'état du service et métriques d'exploitation (supervision).",
+    },
+    {
+        "name": "gares",
+        "description": "Référentiel des gares SNCF (nom, code, coordonnées GPS). Sert notamment au "
+        "calcul de distance entre liaisons (formule de Haversine, cf. Bloc 2 partie 6.2).",
+    },
+    {
+        "name": "régularité",
+        "description": "Ponctualité, annulations et retards mensuels par liaison/région et par type "
+        "de ligne (TER, Grande Vitesse, Intercités), à la base du baromètre (cf. Bloc 2 partie 3).",
+    },
+]
+
 app = FastAPI(
     title="EuroMobilityDataHub API",
-    description="Ponctualité ferroviaire SNCF et référentiel des gares, à partir de données ouvertes ODbL.",
+    description=(
+        "API en lecture seule exposant les données réelles du baromètre ferroviaire "
+        "(ponctualité, annulations, référentiel des gares) produites par le pipeline "
+        "EuroMobilityDataHub à partir de données ouvertes SNCF (licence ODbL).\n\n"
+        "Cette documentation interactive (Swagger) s'adresse aux profils techniques : elle "
+        "permet de tester chaque endpoint directement depuis le navigateur. Pour une prise en "
+        "main non technique, voir le guide `docs/Guide_prise_en_main_OEMF.md`.\n\n"
+        "Accès aux données (`/stations*`, `/regularite*`) : en-tête `X-API-Key` requis, "
+        "30 requêtes/minute par clé (rôle api_consumer, Bloc 1 Tableau 13). "
+        "`/health` et `/metrics` restent ouverts (supervision)."
+    ),
     version="0.1.0",
+    openapi_tags=TAGS_METADATA,
 )
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 REQUEST_COUNT = Counter(
     "api_requests_total", "Nombre total de requêtes reçues par l'API", ["method", "path", "status"]
@@ -53,6 +93,14 @@ REQUEST_COUNT = Counter(
 REQUEST_LATENCY = Histogram(
     "api_request_duration_seconds", "Durée des requêtes API, en secondes", ["method", "path"]
 )
+
+
+def require_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")) -> None:
+    if not x_api_key or x_api_key not in VALID_API_KEYS:
+        raise HTTPException(
+            status_code=401,
+            detail="Clé API manquante ou invalide (en-tête X-API-Key requis, cf. rôle api_consumer)",
+        )
 
 
 def anonymize_ip(ip: str) -> str:
@@ -114,13 +162,26 @@ def rows_to_dicts(rows: list, columns: list[str]) -> list[dict]:
     return [dict(zip(columns, row)) for row in rows]
 
 
-@app.get("/health")
+@app.get(
+    "/health",
+    tags=["santé"],
+    summary="Vérifier que l'API et sa base sont accessibles",
+    response_description="Statut du service et environnement actif (dev, preprod ou prod)",
+)
 def health():
     return {"status": "ok", "env": APP_ENV}
 
 
-@app.get("/stations")
+@app.get(
+    "/stations",
+    tags=["gares"],
+    summary="Lister les gares du référentiel",
+    response_description="Liste des gares correspondant au filtre, avec coordonnées GPS",
+    dependencies=[Depends(require_api_key)],
+)
+@limiter.limit("30/minute")
 def list_stations(
+    request: Request,
     q: Optional[str] = Query(None, description="Filtre sur le nom de gare (recherche partielle)"),
     limit: int = Query(50, le=500),
 ):
@@ -142,8 +203,15 @@ def list_stations(
     return rows_to_dicts(rows, STATION_COLUMNS)
 
 
-@app.get("/stations/{station_id}")
-def get_station(station_id: str):
+@app.get(
+    "/stations/{station_id}",
+    tags=["gares"],
+    summary="Récupérer une gare par son identifiant",
+    response_description="Détail de la gare (nom, trigramme, code UIC, coordonnées GPS)",
+    dependencies=[Depends(require_api_key)],
+)
+@limiter.limit("30/minute")
+def get_station(request: Request, station_id: str):
     con = get_connection()
     try:
         row = con.execute(
@@ -157,8 +225,16 @@ def get_station(station_id: str):
     return dict(zip(STATION_COLUMNS, row))
 
 
-@app.get("/regularite")
+@app.get(
+    "/regularite",
+    tags=["régularité"],
+    summary="Lister les indicateurs mensuels de régularité",
+    response_description="Lignes de régularité (ponctualité, annulations, retard moyen) filtrées",
+    dependencies=[Depends(require_api_key)],
+)
+@limiter.limit("30/minute")
 def list_regularite(
+    request: Request,
     type_ligne: Optional[str] = Query(None, description="grande_vitesse | regional | intercite"),
     mois: Optional[str] = Query(None, description="YYYY-MM"),
     axe_label: Optional[str] = Query(None, description="Filtre partiel sur le libellé de l'axe (liaison ou région)"),
@@ -193,8 +269,15 @@ def list_regularite(
     return rows_to_dicts(rows, REGULARITE_COLUMNS)
 
 
-@app.get("/regularite/stats")
-def regularite_stats():
+@app.get(
+    "/regularite/stats",
+    tags=["régularité"],
+    summary="Moyennes de ponctualité, annulation et retard par type de ligne",
+    response_description="Une ligne par type de ligne (TER, Grande Vitesse, Intercités) avec ses moyennes",
+    dependencies=[Depends(require_api_key)],
+)
+@limiter.limit("30/minute")
+def regularite_stats(request: Request):
     con = get_connection()
     try:
         rows = con.execute(
