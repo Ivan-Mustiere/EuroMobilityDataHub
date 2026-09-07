@@ -90,7 +90,10 @@ services:
       - ${API_ENV_FILE:-./local-test/api.env}
 
   airflow:
-    image: apache/airflow:2.10.5
+    # Image personnalisée (cf. ./airflow/Dockerfile) : PySpark (Bloc 1, partie 4.1) a besoin d'une
+    # JVM, absente de l'image officielle et impossible à ajouter via _PIP_ADDITIONAL_REQUIREMENTS
+    # (ne gère que des paquets Python, pas de paquets système).
+    build: ./airflow
     command: ["standalone"]
     restart: unless-stopped
     ports:
@@ -98,23 +101,57 @@ services:
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
-      # Raccourci documenté par Airflow pour une démo (installe les deps au démarrage plutôt que
-      # de builder une image dédiée) — à remplacer par une image custom pour un usage prolongé.
-      _PIP_ADDITIONAL_REQUIREMENTS: "duckdb==1.5.5 requests==2.34.2 PyYAML==6.0.3 python-dotenv==1.2.2 boto3==1.43.89 snowflake-connector-python==4.7.3 cryptography==50.0.1 dbt-snowflake==1.12.0"
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      # Alerte email sur échec de tâche (Bloc 1, partie 5.2/d) via AWS SES, cf. pipeline_dag.py.
+      ALERT_EMAIL: ${ALERT_EMAIL:-}
+      AWS_REGION: ${AWS_REGION:-eu-west-3}
     # ${SNOWFLAKE_ENV_FILE} : idem RDS_ENV_FILE, positionné par le bootstrap EC2 en production.
     env_file:
       - ${SNOWFLAKE_ENV_FILE:-./local-test/snowflake.env}
     volumes:
       - ./airflow/dags:/opt/airflow/dags
-      # /opt/app/pipeline/../ = /opt/app, qui contient data/config/environments en frères de
-      # pipeline/ — reproduit la structure attendue par ROOT dans ingest.py/transform.py (côté
-      # conteneur ; côté hôte, ../../apps/pipeline vit sous apps/, cf. structure du dépôt).
-      - ../../apps/pipeline:/opt/app/pipeline
+      # Miroir exact de la disposition du dépôt sous /opt/app (apps/pipeline/, data/, config/...
+      # en frères) : ROOT = pathlib.Path(__file__).resolve().parent.parent.parent dans
+      # ingest.py/transform.py/load_cloud.py suppose cette profondeur précise, qu'il tourne en
+      # local (repo réel) ou ici (conteneur) — un montage aplati ("pipeline/" au lieu
+      # d'"apps/pipeline/") casserait ce calcul.
+      - ../../apps:/opt/app/apps
       - ../../data:/opt/app/data
       - ../../config:/opt/app/config
       - ../../environments:/opt/app/environments
       - ../../dbt:/opt/app/dbt
       - airflow-data:/opt/airflow
+
+  # Supervision réelle de la pipeline cloud (Bloc 1, partie 2.4/5.2.d) : scrape l'API (déjà
+  # instrumentée, cf. apps/api/main.py) directement sur l'EC2 Applicative. Ports mappés sur
+  # l'hôte mais AUCUNE règle entrante côté security group (vpc.tf) : accès admin exclusivement
+  # via tunnel SSM (aws ssm start-session --document-name AWS-StartPortForwardingSession), qui ne
+  # transite pas par le SG — cohérent avec le principe "zéro port entrant sauf SSM" de cette
+  # instance.
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    ports:
+      - "3030:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
 
 volumes:
   airflow-data:

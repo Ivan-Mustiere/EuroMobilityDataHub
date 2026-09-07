@@ -130,10 +130,26 @@ def copy_into_staging(keys: dict[str, str]) -> None:
 
 
 def main() -> None:
+    import argparse
+
     load_dotenv()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--step",
+        choices=["upload", "copy", "all"],
+        default="all",
+        help="upload = S3 seulement (load_staging) ; copy = Snowflake COPY INTO seulement "
+        "(load_warehouse, réutilise les clés S3 du jour) ; all = les deux (usage manuel/local).",
+    )
+    args = parser.parse_args()
+
     bucket = os.environ["BRONZE_BUCKET"]
-    keys = upload_to_bronze(bucket)
-    copy_into_staging(keys)
+    if args.step == "upload":
+        upload_to_bronze(bucket)
+    elif args.step == "copy":
+        copy_into_staging(s3_keys_for_today())
+    else:
+        copy_into_staging(upload_to_bronze(bucket))
     print("[load_cloud] terminé")
 
 
