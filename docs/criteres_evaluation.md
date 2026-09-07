@@ -1,8 +1,9 @@
-# Critères d'évaluation — RNCP39586 (Bloc 1 & Bloc 2)
+# Critères d'évaluation — RNCP39586 (Bloc 1, 2 & 3)
 
 Extrait de `docs/Grille évaluation Ingénieur en science des données.xlsx` (feuilles « Grille Eval
-Bloc1 » et « Grille Eval Bloc 2 »), limité aux deux blocs couverts par ce dépôt
-(`docs/Bloc_1.docx`, `docs/Bloc_2.docx`). Résultat noté Acquis / Non Acquis par compétence.
+Bloc1 », « Grille Eval Bloc 2 » et « Grille Eval Bloc 3 »), limité aux trois blocs couverts par ce
+dépôt (`docs/Bloc_1.docx`, `docs/Bloc_2.docx`, `docs/Bloc_3.docx`). Résultat noté Acquis / Non
+Acquis par compétence.
 
 ## BLOC 1 — Collecter, transformer et sécuriser des données
 
@@ -32,6 +33,21 @@ Bloc1 » et « Grille Eval Bloc 2 »), limité aux deux blocs couverts par ce d�
 | C2.3.1 | Former les utilisateurs aux données et aux outils de visualisation. | Un support de formation | Enjeu/sujet présentés. Support adapté, permet la montée en compétences du public visé. |
 | C2.3.2 | Rédiger la documentation technique d'utilisation du système d'analyse de données. | Une documentation technique | Décrit : sources de données (origine, périmètre), méthodes de calcul, description technique/fonctionnelle des indicateurs. Assure compréhension, transmission, reproductibilité. |
 
+## BLOC 3 — Élaborer et piloter un projet DATA
+
+| Compétence | Description | Livrable attendu | Critères d'évaluation |
+|---|---|---|---|
+| C3.1.1 | Définir les objectifs et le périmètre du projet (contraintes techniques/réglementaires, contexte, enjeux). | Le cadrage du projet | Identifie : problématique, objectifs et livrables, cadre réglementaire, contraintes et points de vigilance, enjeux RSE le cas échéant. |
+| C3.1.2 | Dimensionner le projet (charge de travail, ressources humaines/matérielles, délai/budget). | Le dimensionnement du projet | Comporte : ressources humaines, ressources matérielles/logistiques, chiffrage (coût/délai), analyse de faisabilité. Permet d'atteindre les objectifs qualité/coût/délai du commanditaire. |
+| C3.1.3 | Rédiger la documentation projet (parties prenantes, caractéristiques du projet). | La documentation projet | En adéquation avec le cadrage (ex. cahier des charges, spécifications techniques/fonctionnelles). Vocabulaire compréhensible par les parties prenantes. |
+| C3.2.1 | Planifier l'exécution (répartition/ordonnancement, planning prévisionnel, personnes en situation de handicap). | Le planning projet | Méthodologie de gestion de projet justifiée (ex. Kanban, Scrum, Lean). Outil de planification compatible (Gantt, rétroplanning). Planning découpé en phases/tâches/lots. Tâches assignées selon compétences (RACI/RASCI), handicap pris en compte. Points de vigilance soulignés (chemin critique, compétences rares). |
+| C3.2.2 | Suivre l'avancement (outil de suivi, indicateurs, reporting) afin d'anticiper les aléas. | Un outil de suivi de projet + un tableau de bord | Outil de suivi adapté à la méthodologie choisie. Indicateurs qualitatifs/quantitatifs argumentés. Permettent de suivre avancement, délais, maîtrise des coûts. |
+| C3.3.1 | Évaluer les besoins en compétences de l'équipe, plan de développement des compétences. | Un plan de développement des compétences | Compétences à mobiliser identifiées. Grille compétences actuelles/à acquérir commentée. Plan de développement détaillé, formations préconisées, modalités adaptées au handicap. |
+| C3.3.2 | Piloter l'équipe projet (affectation des missions, communication, animation managériale, contexte multiculturel). | Les outils de communication et managériaux utilisés | Charge de travail répartie équitablement. Outils collaboratifs et routines managériales détaillés et justifiés. Prise en compte des personnes en situation de handicap. |
+| C3.3.3 | Procéder aux arbitrages/réajustements (écarts prévisionnel/réel, outils d'aide à la décision). | La présentation d'un cas d'arbitrage rencontré au cours du projet | Problématique exposée avec conséquences potentielles. Options possibles détaillées. Décision d'arbitrage argumentée, résout la problématique. |
+| C3.4.1 | Mettre en place une veille technologique et réglementaire (science des données, IA). | Une méthodologie de veille | Méthodologie de recueil argumentée (bénéfices attendus). Résultat d'une action de veille présenté : impact sur les pratiques métier, avantages/inconvénients de l'évolution. |
+| C3.4.2 | Intégrer les enjeux de données responsables (RSE, sécurité, éthique, confidentialité) dans ses pratiques. | Un plan d'actions RSE, sécurité, éthique et confidentialité | Enjeux RSE détaillés. Arbitrages de priorisation précisés/justifiés. Plan d'actions : sujet, action, délai, coût estimé, résultats attendus. |
+
 ## Comment ce dépôt répond à chaque critère
 
 - **C1.1.x / C1.2.x / C1.3.x / C1.4.x** : couverts par le texte du Bloc 1 (stratégie/architecture
@@ -43,6 +59,15 @@ Bloc1 » et « Grille Eval Bloc 2 »), limité aux deux blocs couverts par ce d�
 - **C2.2.1** (visualisation) : `analysis/charts.py` (palette Okabe-Ito, contraste WCAG AA) +
   dashboard Metabase.
 - **C2.3.2** (documentation technique) : `README.md` + `docs/Bloc_2.docx` (6.2).
+- **C3.2.1/C3.2.2** (planning/suivi) : historique Git réel (dates de commits/PR) + gouvernance de
+  branches (`preprod`/`prod` protégées, CI `build-and-smoke-test`) comme outil de suivi, `pytest`
+  (48 tests) comme indicateur de stabilité.
+- **C3.3.3** (arbitrage) : restriction du périmètre à la SNCF (Bloc 2, 2.2) — décision réelle et
+  documentée, prise plutôt que de compléter par des données fictives.
+- **C3.4.1** (veille) : Dependabot (dépôt GitHub) + Google Alertes ; résultat concret illustré par
+  le choix de DuckDB (Bloc 2, 3.1).
+- **C3.4.2** (RSE/sécurité/éthique) : ouverture de l'API à des tiers + anonymisation RGPD
+  (`api/main.py`) + accessibilité (`analysis/charts.py`).
 
 Toute modification de ces fichiers doit rester cohérente avec le critère qu'elle sert à démontrer —
 un changement qui casse l'anonymisation RGPD, retire l'η²/Spearman, ou abandonne la palette
