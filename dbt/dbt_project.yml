@@ -1,0 +1,16 @@
+name: euromobilitydatahub
+version: "1.0.0"
+config-version: 2
+
+profile: euromobilitydatahub
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+clean-targets: ["target", "dbt_packages"]
+
+# Un seul schéma cible (MART, cf. profiles.yml) : pas de +schema par dossier, pour éviter le
+# suffixe "<schema>_<custom>" que dbt ajoute par défaut à generate_schema_name.
+models:
+  euromobilitydatahub:
+    marts:
+      +materialized: table

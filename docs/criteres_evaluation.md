@@ -60,9 +60,11 @@ Acquis par compétence.
   et bucket S3 bronze réellement déployés et peuplés (`pipeline/load_cloud.py`, voir
   `infra/terraform/snowflake.tf`/`s3.tf`) + RDS PostgreSQL (`fact_realtime`, alimentée en continu
   par `cloud/kafka-app/consumer.py`, voir `infra/terraform/rds.tf`).
-- **C1.3.2** (transformation) : `pipeline/transform.py`.
-- **C1.3.3** (ETL + orchestration) : `pipeline/run.py` + `pipeline/load_cloud.py`, orchestrés par
-  le DAG Airflow ci-dessus — orchestration réelle, pas un pseudo-code d'annexe.
+- **C1.3.2** (transformation) : `pipeline/transform.py` (local) + `dbt/models/marts/` (Gold sur
+  Snowflake — mêmes règles d'harmonisation TGV/TER/Intercités, 5 tests dbt réels).
+- **C1.3.3** (ETL + orchestration) : `pipeline/run.py` + `pipeline/load_cloud.py` + `dbt run`,
+  orchestrés par le DAG Airflow ci-dessus (`ingest -> transform -> load_cloud -> dbt`) —
+  orchestration réelle et vérifiée de bout en bout via le scheduler, pas un pseudo-code d'annexe.
 - **C1.4.1** (politique de sécurité) : anonymisation RGPD + clé API + quotas (`api/main.py`), IAM
   least-privilege (`infra/terraform/iam.tf`), secrets réellement stockés et consommés
   (`infra/terraform/secrets.tf`, `rds.tf`) — plus une politique déclarée, un mécanisme qui tourne.

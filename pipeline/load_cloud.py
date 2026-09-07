@@ -99,10 +99,15 @@ def copy_into_staging(keys: dict[str, str]) -> None:
         for filename, key in keys.items():
             table = table_name_for(filename)
             stage_path = f"@BRONZE_STAGE/{key}"
-            print(f"[load_cloud] infère/crée STAGING.{table} depuis {stage_path}")
+            print(f"[load_cloud] infère/recrée STAGING.{table} depuis {stage_path}")
+            # CREATE OR REPLACE (pas IF NOT EXISTS) : rejoue proprement à chaque exécution, comme
+            # transform.py (CREATE OR REPLACE TABLE partout). Nécessaire ici en plus : le bucket
+            # bronze est versionné (s3.tf), donc réexécuter le pipeline le même jour crée une
+            # nouvelle version du même chemin S3 avec un "dernier modifié" différent — COPY INTO
+            # ne dédoublonne pas sur ce critère et aurait dupliqué les lignes à chaque rejeu.
             cur.execute(
                 f"""
-                CREATE TABLE IF NOT EXISTS STAGING.{table}
+                CREATE OR REPLACE TABLE STAGING.{table}
                 USING TEMPLATE (
                     SELECT ARRAY_AGG(OBJECT_CONSTRUCT(*))
                     FROM TABLE(

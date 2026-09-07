@@ -170,9 +170,12 @@ python pipeline/load_cloud.py
 ```
 
 Sur l'infra cloud (EC2 Applicative), ce flux est orchestré par un DAG Airflow hebdomadaire
-(`cloud/airflow/dags/pipeline_dag.py`) ; en parallèle, un producer/consumer Kafka (`cloud/`)
-ingère en continu le flux GTFS-RT public de la SNCF vers RDS PostgreSQL (`fact_realtime`, couche
-Silver temps réel du Bloc 1). Détails, dimensionnement et procédure destroy : `infra/README.md`.
+(`cloud/airflow/dags/pipeline_dag.py` : `ingest -> transform -> load_cloud -> dbt`) ; `dbt/`
+promeut ensuite STAGING vers MART (Gold) — `dim_stations` et `fact_regularite`, mêmes règles
+d'harmonisation que `pipeline/transform.py`, 5 tests dbt. En parallèle, un producer/consumer Kafka
+(`cloud/`) ingère en continu le flux GTFS-RT public de la SNCF vers RDS PostgreSQL
+(`fact_realtime`, couche Silver temps réel du Bloc 1). Détails, dimensionnement et procédure
+destroy : `infra/README.md`.
 
 ## Structure du projet
 
@@ -180,6 +183,7 @@ Silver temps réel du Bloc 1). Détails, dimensionnement et procédure destroy :
 docs/                   documentation d'architecture du projet
 infra/terraform/        infrastructure AWS + Snowflake (Terraform), voir infra/README.md
 cloud/                  stack déployée sur l'EC2 : Kafka, producer/consumer GTFS-RT, DAG Airflow
+dbt/                    projet dbt : promotion Snowflake STAGING -> MART (Gold)
 pipeline/               ingest.py, transform.py, run.py, load_cloud.py (Bronze -> Snowflake)
 api/                    API REST FastAPI (main.py) servant les données du pipeline
 monitoring/             config Prometheus + provisioning Grafana (datasource, dashboard)

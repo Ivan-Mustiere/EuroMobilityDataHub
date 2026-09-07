@@ -144,6 +144,16 @@ resource "snowflake_grant_privileges_to_account_role" "etl_loader_staging_schema
   }
 }
 
+# dbt (promotion STAGING -> MART, cf. ../../dbt/) tourne sous ETL_LOADER : il lui faut CREATE
+# TABLE sur MART en plus de STAGING (ANALYST reste lecture seule, cf. grants plus bas).
+resource "snowflake_grant_privileges_to_account_role" "etl_loader_mart_schema" {
+  privileges        = ["USAGE", "CREATE TABLE", "CREATE VIEW"]
+  account_role_name = snowflake_account_role.etl_loader.name
+  on_schema {
+    schema_name = snowflake_schema.mart.fully_qualified_name
+  }
+}
+
 resource "snowflake_grant_privileges_to_account_role" "etl_loader_stage_usage" {
   privileges        = ["USAGE"]
   account_role_name = snowflake_account_role.etl_loader.name

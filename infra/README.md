@@ -90,7 +90,11 @@ Services (`../cloud/docker-compose.yml`) :
 - **kafka** (KRaft mono-nœud) + **producer** (poll le flux GTFS-RT public SNCF toutes les 2 min)
   + **consumer** (upsert dans `fact_realtime`, RDS).
 - **airflow** (mode `standalone`, léger) : DAG hebdomadaire `euromobilitydatahub_batch`
-  (ingest -> transform -> load_cloud), cf. `../cloud/airflow/dags/pipeline_dag.py`.
+  (ingest -> transform -> load_cloud -> dbt), cf. `../cloud/airflow/dags/pipeline_dag.py`.
+  dbt (`../../dbt/`) promeut STAGING -> MART (2 modèles, 5 tests, cf. `dbt/models/marts/`) ;
+  nécessite que les dossiers montés en volume (`data/`, `environments/`, `config/`, `dbt/`) restent
+  accessibles en écriture à l'utilisateur non-root du conteneur Airflow (uid 50000) — d'où le
+  `chmod 777` sur ces dossiers dans le bootstrap.
 
 Vérifier depuis un poste local (pas de SSH — SSM uniquement) :
 ```bash
@@ -99,6 +103,13 @@ aws ssm start-session --target <instance-id>
 docker compose -f /opt/euromobilitydatahub/cloud/docker-compose.yml ps
 docker logs -f consumer   # ou producer, airflow, kafka
 ```
+
+Mettre à jour le code applicatif sur une instance déjà démarrée (après un nouveau
+`terraform apply` qui a re-uploadé `_deploy/cloud.zip`) : `docker compose up -d --build` ne suffit
+**pas** si seul le contenu d'un volume a changé (pas le `docker-compose.yml` lui-même) — Compose ne
+détecte pas de changement et ne recrée pas le conteneur, qui garde alors un point de montage
+périmé si le dossier source a été supprimé/recréé entre-temps. Utiliser
+`docker compose up -d --force-recreate <service>` dans ce cas.
 
 Tester la stack Kafka/Postgres **en local sans AWS**, avant tout déploiement :
 ```bash
@@ -110,8 +121,6 @@ cd cloud && docker compose --profile local-test up -d --build
 
 - **Un seul warehouse Snowflake** partagé entre `ETL_LOADER` et `ANALYST` : pas d'isolation des
   coûts par rôle, acceptable pour ce volume de démo.
-- **Pas de dbt réel** : la promotion STAGING -> MART reste décrite au Bloc 1 mais non implémentée
-  ici (hors périmètre de la remise en état du Bloc 1, cf. le tableau de suivi des compétences).
 - **RDS sans sauvegarde** (`backup_retention_period = 0`, `skip_final_snapshot = true`) :
   acceptable, les données sont réalimentées en continu par Kafka et régénérables depuis S3.
 - **Kafka mono-nœud, une seule partition** : suffisant pour la démo, pas dimensionné pour un

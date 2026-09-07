@@ -18,10 +18,10 @@ data "aws_ami" "ubuntu" {
 }
 
 # Empaqueté à chaque `terraform plan/apply` (pas d'étape manuelle) : le DAG Airflow exécute
-# pipeline/run.py + pipeline/load_cloud.py directement (cf. ../cloud/docker-compose.yml, volumes
-# ../pipeline et ../config relatifs à cloud/docker-compose.yml), donc le bundle doit contenir
-# cloud/ ET pipeline/ ET config/ avec la même disposition relative que dans le dépôt — d'où cette
-# étape de mise en scène (staging) avant l'archivage, plutôt qu'un simple zip de cloud/ seul.
+# pipeline/run.py + pipeline/load_cloud.py + dbt directement (cf. ../cloud/docker-compose.yml,
+# volumes ../pipeline, ../config et ../dbt relatifs à cloud/docker-compose.yml), donc le bundle
+# doit contenir cloud/ ET pipeline/ ET config/ ET dbt/ avec la même disposition relative que dans
+# le dépôt — d'où cette étape de mise en scène (staging) avant l'archivage.
 resource "null_resource" "stage_cloud_bundle" {
   triggers = { always_run = timestamp() }
 
@@ -35,6 +35,8 @@ resource "null_resource" "stage_cloud_bundle" {
       rm -rf "${path.module}/.staging/cloud/local-test"
       cp -r "${path.module}/../../pipeline" "${path.module}/.staging/pipeline"
       cp -r "${path.module}/../../config" "${path.module}/.staging/config"
+      cp -r "${path.module}/../../dbt" "${path.module}/.staging/dbt"
+      rm -rf "${path.module}/.staging/dbt/target" "${path.module}/.staging/dbt/dbt_packages" "${path.module}/.staging/dbt/logs"
       find "${path.module}/.staging" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
     EOT
   }

@@ -79,7 +79,7 @@ services:
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       # Raccourci documenté par Airflow pour une démo (installe les deps au démarrage plutôt que
       # de builder une image dédiée) — à remplacer par une image custom pour un usage prolongé.
-      _PIP_ADDITIONAL_REQUIREMENTS: "duckdb==1.5.5 requests==2.34.2 PyYAML==6.0.3 python-dotenv==1.2.2 boto3==1.43.89 snowflake-connector-python==4.7.3 cryptography==50.0.1"
+      _PIP_ADDITIONAL_REQUIREMENTS: "duckdb==1.5.5 requests==2.34.2 PyYAML==6.0.3 python-dotenv==1.2.2 boto3==1.43.89 snowflake-connector-python==4.7.3 cryptography==50.0.1 dbt-snowflake==1.12.0"
     # ${SNOWFLAKE_ENV_FILE} : idem RDS_ENV_FILE, positionné par le bootstrap EC2 en production.
     env_file:
       - ${SNOWFLAKE_ENV_FILE:-./local-test/snowflake.env}
@@ -91,6 +91,7 @@ services:
       - ../data:/opt/app/data
       - ../config:/opt/app/config
       - ../environments:/opt/app/environments
+      - ../dbt:/opt/app/dbt
       - airflow-data:/opt/airflow
 
 volumes:

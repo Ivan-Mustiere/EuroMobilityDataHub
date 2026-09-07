@@ -30,8 +30,12 @@ unzip -q /tmp/awscliv2.zip -d /tmp
 mkdir -p /opt/euromobilitydatahub/secrets
 mkdir -p /opt/euromobilitydatahub/data/raw /opt/euromobilitydatahub/data/processed
 mkdir -p /opt/euromobilitydatahub/environments/dev /opt/euromobilitydatahub/environments/preprod /opt/euromobilitydatahub/environments/prod
+# Airflow tourne dans son conteneur avec un utilisateur non-root (uid 50000) : ces dossiers,
+# créés ici par root, doivent rester accessibles en écriture depuis le conteneur.
+chmod -R 777 /opt/euromobilitydatahub/data /opt/euromobilitydatahub/environments
 aws s3 cp "s3://${bucket}/_deploy/cloud.zip" /opt/euromobilitydatahub/cloud.zip --region "${region}"
 unzip -o -q /opt/euromobilitydatahub/cloud.zip -d /opt/euromobilitydatahub
+chmod -R 777 /opt/euromobilitydatahub/config
 
 # --- Secrets (cf. infra/terraform/secrets.tf, rds.tf) ---
 # SNOWFLAKE_PRIVATE_KEY est un PEM multi-lignes : incompatible tel quel avec le format
