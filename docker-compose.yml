@@ -38,7 +38,7 @@ services:
     environment:
       - APP_ENV=${API_ENV:-preprod}
       - API_KEYS=${API_KEYS:-dev-local-key}
-    entrypoint: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    entrypoint: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     ports:
       - "8000:8000"
     volumes:
@@ -46,7 +46,7 @@ services:
 
   # Chiffrement en transit (C1.4.2) : TLS terminé par Caddy (CA interne, pas de domaine requis
   # pour la démo). Accès : https://localhost:8443 (le navigateur avertit sur le certificat local,
-  # c'est attendu — voir caddy/Caddyfile).
+  # c'est attendu — voir ops/caddy/Caddyfile).
   caddy:
     image: caddy:2-alpine
     depends_on:
@@ -54,13 +54,13 @@ services:
     ports:
       - "8443:8443"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./ops/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
 
   prometheus:
     image: prom/prometheus:latest
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./ops/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "9090:9090"
     depends_on:
@@ -74,17 +74,17 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
     volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./ops/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     ports:
       - "3030:3000"
     depends_on:
       - prometheus
 
   # Dashboard métier (C2.1.3) — équivalent open source de Power BI
-  # Prérequis : bash monitoring/metabase/download_driver.sh
+  # Prérequis : bash ops/monitoring/metabase/download_driver.sh
   metabase:
     build:
-      context: ./monitoring/metabase
+      context: ./ops/monitoring/metabase
       dockerfile: Dockerfile
     ports:
       - "3001:3000"

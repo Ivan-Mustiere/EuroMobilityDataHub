@@ -52,27 +52,27 @@ Acquis par compétence.
 
 - **C1.1.1/C1.2.1/C1.3.1** (stratégies, choix technos) : couverts par le texte du Bloc 1
   (architecture cible).
-- **C1.1.2** (techniques de collecte) : `pipeline/ingest.py`, `analysis/queries.sql`.
+- **C1.1.2** (techniques de collecte) : `apps/pipeline/ingest.py`, `analysis/queries.sql`.
 - **C1.1.3** (automatisation) : cron hebdomadaire réel (`.github/workflows/preprod.yml`) + DAG
-  Airflow (`cloud/airflow/dags/pipeline_dag.py`) sur l'EC2 Applicative + flux temps réel Kafka
-  (`cloud/kafka-app/producer.py`, poll GTFS-RT SNCF toutes les 2 min).
+  Airflow (`infra/cloud/airflow/dags/pipeline_dag.py`) sur l'EC2 Applicative + flux temps réel Kafka
+  (`apps/streaming/producer.py`, poll GTFS-RT SNCF toutes les 2 min).
 - **C1.2.2** (base de données + solution Big Data) : DuckDB (réel, local) + Snowflake STAGING/MART
-  et bucket S3 bronze réellement déployés et peuplés (`pipeline/load_cloud.py`, voir
+  et bucket S3 bronze réellement déployés et peuplés (`apps/pipeline/load_cloud.py`, voir
   `infra/terraform/snowflake.tf`/`s3.tf`) + RDS PostgreSQL (`fact_realtime`, alimentée en continu
-  par `cloud/kafka-app/consumer.py`, voir `infra/terraform/rds.tf`).
-- **C1.3.2** (transformation) : `pipeline/transform.py` (local) + `dbt/models/marts/` (Gold sur
+  par `apps/streaming/consumer.py`, voir `infra/terraform/rds.tf`).
+- **C1.3.2** (transformation) : `apps/pipeline/transform.py` (local) + `dbt/models/marts/` (Gold sur
   Snowflake — mêmes règles d'harmonisation TGV/TER/Intercités, 5 tests dbt réels).
-- **C1.3.3** (ETL + orchestration) : `pipeline/run.py` + `pipeline/load_cloud.py` + `dbt run`,
+- **C1.3.3** (ETL + orchestration) : `apps/pipeline/run.py` + `apps/pipeline/load_cloud.py` + `dbt run`,
   orchestrés par le DAG Airflow ci-dessus (`ingest -> transform -> load_cloud -> dbt`) —
   orchestration réelle et vérifiée de bout en bout via le scheduler, pas un pseudo-code d'annexe.
-- **C1.4.1** (politique de sécurité) : anonymisation RGPD + clé API + quotas (`api/main.py`), IAM
+- **C1.4.1** (politique de sécurité) : anonymisation RGPD + clé API + quotas (`apps/api/main.py`), IAM
   least-privilege (`infra/terraform/iam.tf`), secrets réellement stockés et consommés
   (`infra/terraform/secrets.tf`, `rds.tf`) — plus une politique déclarée, un mécanisme qui tourne.
 - **C1.4.2** (architecture sécurisée multicouche) : zonage réseau + security groups
   (`infra/terraform/vpc.tf`), chiffrement au repos S3/RDS, chiffrement en transit local
-  (`caddy/Caddyfile`, TLS).
+  (`ops/caddy/Caddyfile`, TLS).
 - **C2.1.3** (requêtes/calculs) : `analysis/queries.sql`, `analysis/export_results.py`,
-  `pipeline/transform.py`.
+  `apps/pipeline/transform.py`.
 - **C2.1.4** (tests statistiques) : `analysis/stats_tests.py` (ANOVA H1 + η², Spearman H2, α=0,05).
 - **C2.2.1** (visualisation) : `analysis/charts.py` (palette Okabe-Ito, contraste WCAG AA) +
   dashboard Metabase.
@@ -85,7 +85,7 @@ Acquis par compétence.
 - **C3.4.1** (veille) : Dependabot (dépôt GitHub) + Google Alertes ; résultat concret illustré par
   le choix de DuckDB (Bloc 2, 3.1).
 - **C3.4.2** (RSE/sécurité/éthique) : ouverture de l'API à des tiers + anonymisation RGPD
-  (`api/main.py`) + accessibilité (`analysis/charts.py`).
+  (`apps/api/main.py`) + accessibilité (`analysis/charts.py`).
 
 Toute modification de ces fichiers doit rester cohérente avec le critère qu'elle sert à démontrer —
 un changement qui casse l'anonymisation RGPD, retire l'η²/Spearman, ou abandonne la palette

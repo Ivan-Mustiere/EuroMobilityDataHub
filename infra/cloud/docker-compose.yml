@@ -30,7 +30,7 @@ services:
           --topic gtfs-rt-trip-updates --partitions 1 --replication-factor 1
 
   producer:
-    build: ./kafka-app
+    build: ../../apps/streaming
     command: ["python", "producer.py"]
     restart: unless-stopped
     depends_on:
@@ -40,7 +40,7 @@ services:
       TOPIC: gtfs-rt-trip-updates
 
   consumer:
-    build: ./kafka-app
+    build: ../../apps/streaming
     command: ["python", "consumer.py"]
     restart: unless-stopped
     depends_on:
@@ -72,9 +72,9 @@ services:
   # ce jour, le port 8000 n'étant plus ouvert au public sur cette instance (vpc.tf).
   api:
     build:
-      context: ..
+      context: ../..
       dockerfile: Dockerfile
-    entrypoint: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    entrypoint: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     restart: unless-stopped
     environment:
       # DAG Airflow (pipeline_dag.py) écrit toujours dans l'environnement preprod : l'API doit
@@ -84,7 +84,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ../environments:/app/environments
+      - ../../environments:/app/environments
     # ${API_ENV_FILE} : idem RDS_ENV_FILE/SNOWFLAKE_ENV_FILE, positionné par le bootstrap EC2.
     env_file:
       - ${API_ENV_FILE:-./local-test/api.env}
@@ -107,12 +107,13 @@ services:
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       # /opt/app/pipeline/../ = /opt/app, qui contient data/config/environments en frères de
-      # pipeline/ — reproduit la structure du dépôt attendue par ROOT dans ingest.py/transform.py.
-      - ../pipeline:/opt/app/pipeline
-      - ../data:/opt/app/data
-      - ../config:/opt/app/config
-      - ../environments:/opt/app/environments
-      - ../dbt:/opt/app/dbt
+      # pipeline/ — reproduit la structure attendue par ROOT dans ingest.py/transform.py (côté
+      # conteneur ; côté hôte, ../../apps/pipeline vit sous apps/, cf. structure du dépôt).
+      - ../../apps/pipeline:/opt/app/pipeline
+      - ../../data:/opt/app/data
+      - ../../config:/opt/app/config
+      - ../../environments:/opt/app/environments
+      - ../../dbt:/opt/app/dbt
       - airflow-data:/opt/airflow
 
 volumes:

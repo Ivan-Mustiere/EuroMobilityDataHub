@@ -5,7 +5,7 @@ partitionné par opérateur / type de donnée / date, puis COPY INTO avec infér
 automatique (une table STAGING par fichier source — aucune liste de colonnes en dur ici, la
 définition canonique du schéma harmonisé reste dans transform.py).
 
-Usage : python pipeline/load_cloud.py
+Usage : python apps/pipeline/load_cloud.py
 
 Variables d'environnement requises :
   - BRONZE_BUCKET (nom du bucket S3, sortie Terraform `bronze_bucket_name`)
@@ -28,7 +28,7 @@ import snowflake.connector
 from cryptography.hazmat.primitives import serialization
 from dotenv import load_dotenv
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 RAW_DIR = ROOT / "data" / "raw"
 
 # Partitionnement "opérateur / type de donnée / date" (Bloc 1, partie 3.4/a).

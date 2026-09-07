@@ -32,7 +32,7 @@ import duckdb
 import yaml
 from dotenv import load_dotenv
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 RAW_DIR = ROOT / "data" / "raw"
 
 TGV_CSV = RAW_DIR / "regularite_tgv.csv"

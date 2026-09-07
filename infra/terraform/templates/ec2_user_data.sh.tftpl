@@ -24,9 +24,10 @@ curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/aw
 unzip -q /tmp/awscliv2.zip -d /tmp
 /tmp/aws/install
 
-# --- Bundle applicatif (cloud/, pipeline/, config/ — cf. ec2.tf/null_resource.stage_cloud_bundle)
-# Extrait à la racine /opt/euromobilitydatahub (pas dans .../cloud) pour que les chemins relatifs
-# "../pipeline", "../config" du docker-compose.yml de cloud/ pointent au bon endroit.
+# --- Bundle applicatif (infra/cloud/, apps/, config/ — cf. ec2.tf/null_resource.stage_cloud_bundle)
+# Extrait à la racine /opt/euromobilitydatahub (miroir exact du dépôt) pour que les chemins
+# relatifs "../../apps/pipeline", "../../config" du docker-compose.yml de infra/cloud/ pointent au
+# bon endroit.
 mkdir -p /opt/euromobilitydatahub/secrets
 mkdir -p /opt/euromobilitydatahub/data/raw /opt/euromobilitydatahub/data/processed
 mkdir -p /opt/euromobilitydatahub/environments/dev /opt/euromobilitydatahub/environments/preprod /opt/euromobilitydatahub/environments/prod
@@ -40,7 +41,7 @@ chmod -R 777 /opt/euromobilitydatahub/config /opt/euromobilitydatahub/dbt
 # --- Secrets (cf. infra/terraform/secrets.tf, rds.tf) ---
 # SNOWFLAKE_PRIVATE_KEY est un PEM multi-lignes : incompatible tel quel avec le format
 # "KEY=VALUE" par ligne d'un env_file Docker (Compose refuse un saut de ligne dans une valeur).
-# Encodé en base64 sur une seule ligne ; pipeline/load_cloud.py sait décoder
+# Encodé en base64 sur une seule ligne ; apps/pipeline/load_cloud.py sait décoder
 # SNOWFLAKE_PRIVATE_KEY_B64 en priorité (cf. _load_private_key_pem()).
 aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/etl-cloud-credentials" \
   --query SecretString --output text | jq -r '
@@ -52,9 +53,24 @@ aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_
     end' \
   > /opt/euromobilitydatahub/secrets/snowflake.env
 
+# Le secret RDS utilise le format standard AWS (host/port/dbname/username/password, requis par la
+# Lambda de rotation, cf. secrets_rotation.tf) : reconstruit ici en PG*/majuscules pour l'init du
+# schéma ci-dessous et pour le mode "local-test" de consumer.py (cf. pg_conninfo()).
+# RDS_SECRET_NAME + AWS_REGION permettent à consumer.py de relire ce secret via Secrets Manager à
+# chaque reconnexion, plutôt que de garder ce PGPASSWORD figé au boot — indispensable pour
+# survivre à une rotation automatique sans redémarrage manuel du conteneur.
 aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/rds-postgres" \
-  --query SecretString --output text | jq -r 'to_entries[] | "\(.key)=\(.value)"' \
+  --query SecretString --output text | jq -r '
+    "PGHOST=\(.host)",
+    "PGPORT=\(.port)",
+    "PGDATABASE=\(.dbname)",
+    "PGUSER=\(.username)",
+    "PGPASSWORD=\(.password)"' \
   > /opt/euromobilitydatahub/secrets/rds.env
+{
+  echo "RDS_SECRET_NAME=${project_name}/rds-postgres"
+  echo "AWS_REGION=${region}"
+} >> /opt/euromobilitydatahub/secrets/rds.env
 
 aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/api-key" \
   --query SecretString --output text | jq -r 'to_entries[] | "\(.key)=\(.value)"' \
@@ -62,16 +78,22 @@ aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_
 
 chmod 600 /opt/euromobilitydatahub/secrets/*.env
 
-# --- Initialisation du schéma Postgres (idempotent, cf. cloud/init.sql) ---
-set -a
-# shellcheck disable=SC1091
-source /opt/euromobilitydatahub/secrets/rds.env
-set +a
+# --- Initialisation du schéma Postgres (idempotent, cf. infra/cloud/init.sql) ---
+# Ne PAS "source" rds.env : le mot de passe (généré par la rotation Secrets Manager après la
+# première rotation, cf. secrets_rotation.tf) peut contenir des caractères spéciaux shell
+# ("(", ")", "<", "#"...) qui casseraient une simple assignation KEY=VALUE. Lu directement depuis
+# le JSON du secret via jq, en substitution de commande (aucune interprétation shell du contenu).
+PGHOST=$(aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/rds-postgres" --query SecretString --output text | jq -r '.host')
+PGPORT=$(aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/rds-postgres" --query SecretString --output text | jq -r '.port')
+PGUSER=$(aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/rds-postgres" --query SecretString --output text | jq -r '.username')
+PGDATABASE=$(aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/rds-postgres" --query SecretString --output text | jq -r '.dbname')
+PGPASSWORD=$(aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/rds-postgres" --query SecretString --output text | jq -r '.password')
+export PGPASSWORD
 until pg_isready -h "$PGHOST" -p "$PGPORT"; do sleep 5; done
-PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -f /opt/euromobilitydatahub/cloud/init.sql
+psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" -f /opt/euromobilitydatahub/infra/cloud/init.sql
 
 # --- Démarrage de la stack ---
-cd /opt/euromobilitydatahub/cloud
+cd /opt/euromobilitydatahub/infra/cloud
 export RDS_ENV_FILE=/opt/euromobilitydatahub/secrets/rds.env
 export SNOWFLAKE_ENV_FILE=/opt/euromobilitydatahub/secrets/snowflake.env
 export API_ENV_FILE=/opt/euromobilitydatahub/secrets/api.env

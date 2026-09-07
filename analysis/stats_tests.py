@@ -5,7 +5,7 @@ Usage : python analysis/stats_tests.py [--env dev|preprod|prod]
 H1 — ANOVA à un facteur : taux_ponctualite ~ type_ligne
     Adapté par rapport à l'énoncé initial du dossier ("retard ~ type de ligne") : le retard moyen
     en minutes n'est disponible que pour la grande vitesse (voir limite documentée dans
-    pipeline/transform.py) — impossible de faire une ANOVA à 3 groupes sur cet indicateur sans
+    apps/pipeline/transform.py) — impossible de faire une ANOVA à 3 groupes sur cet indicateur sans
     inventer des valeurs pour TER/Intercités. taux_ponctualite est l'indicateur agrégé disponible
     le plus proche pour les 3 types de ligne, donc utilisé à la place (même logique que
     l'adaptation du P90).

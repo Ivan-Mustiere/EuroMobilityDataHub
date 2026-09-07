@@ -1,5 +1,5 @@
 # Connexion pilotée entièrement par variables d'environnement (même logique que le provider
-# Terraform Snowflake et pipeline/load_cloud.py) — jamais de credentials en dur ici.
+# Terraform Snowflake et apps/pipeline/load_cloud.py) — jamais de credentials en dur ici.
 # SNOWFLAKE_PRIVATE_KEY_PATH : chemin vers le fichier PEM (pas la clé en base64/texte directement
 # — cf. cloud/airflow/dags/pipeline_dag.py qui décode SNOWFLAKE_PRIVATE_KEY_B64 dans ce fichier
 # avant d'appeler dbt).

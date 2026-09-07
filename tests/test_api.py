@@ -5,7 +5,7 @@ import pytest
 import transform
 from fastapi.testclient import TestClient
 
-import api.main as api_main
+import apps.api.main as api_main
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 

@@ -1,7 +1,7 @@
 """API REST EuroMobilityDataHub — sert les données réelles produites par le pipeline.
 
 Lecture seule sur la base DuckDB de l'environnement APP_ENV (dev|preprod|prod).
-Lancer : uvicorn api.main:app --reload --no-access-log
+Lancer : uvicorn apps.api.main:app --reload --no-access-log
 (--no-access-log : les access logs bruts d'uvicorn contiennent l'IP en clair, remplacés par notre
 propre log anonymisé ci-dessous — cf. politique RGPD décrite dans le Bloc 1, partie 5.1/5.2/d.)
 """
@@ -22,7 +22,7 @@ from slowapi.util import get_remote_address
 
 load_dotenv()
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 APP_ENV = os.getenv("APP_ENV", "dev")
 
 # Rôle api_consumer (Bloc 1, Tableau 13) : accès en lecture seule aux endpoints de données,

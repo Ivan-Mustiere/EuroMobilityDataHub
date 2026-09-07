@@ -18,10 +18,13 @@ data "aws_ami" "ubuntu" {
 }
 
 # Empaqueté à chaque `terraform plan/apply` (pas d'étape manuelle) : le DAG Airflow exécute
-# pipeline/run.py + pipeline/load_cloud.py + dbt directement, et le service "api" (cf.
-# ../cloud/docker-compose.yml) build l'image applicative complète (Dockerfile, api/,
-# requirements.txt) — le bundle doit donc contenir cloud/, pipeline/, config/, dbt/, api/,
-# Dockerfile et requirements.txt avec la même disposition relative que dans le dépôt.
+# apps/pipeline/run.py + apps/pipeline/load_cloud.py + dbt directement, et le service "api" (cf.
+# infra/cloud/docker-compose.yml) build l'image applicative complète (Dockerfile, apps/api/,
+# requirements.txt). Le bundle est un MIROIR EXACT du sous-arbre pertinent du dépôt
+# (apps/{pipeline,api,streaming}/, config/, dbt/, infra/cloud/ sans local-test/, Dockerfile,
+# requirements.txt) — même disposition relative que dans le dépôt, pour que
+# infra/cloud/docker-compose.yml fonctionne à l'identique qu'il soit exécuté depuis le dépôt réel
+# ou depuis ce bundle extrait sur l'EC2 (cf. templates/ec2_user_data.sh.tftpl).
 resource "null_resource" "stage_cloud_bundle" {
   triggers = { always_run = timestamp() }
 
@@ -30,14 +33,15 @@ resource "null_resource" "stage_cloud_bundle" {
     command     = <<-EOT
       set -euo pipefail
       rm -rf "${path.module}/.staging"
-      mkdir -p "${path.module}/.staging"
-      cp -r "${path.module}/../../cloud" "${path.module}/.staging/cloud"
-      rm -rf "${path.module}/.staging/cloud/local-test"
-      cp -r "${path.module}/../../pipeline" "${path.module}/.staging/pipeline"
+      mkdir -p "${path.module}/.staging/apps" "${path.module}/.staging/infra"
+      cp -r "${path.module}/../../infra/cloud" "${path.module}/.staging/infra/cloud"
+      rm -rf "${path.module}/.staging/infra/cloud/local-test"
+      cp -r "${path.module}/../../apps/pipeline" "${path.module}/.staging/apps/pipeline"
+      cp -r "${path.module}/../../apps/api" "${path.module}/.staging/apps/api"
+      cp -r "${path.module}/../../apps/streaming" "${path.module}/.staging/apps/streaming"
       cp -r "${path.module}/../../config" "${path.module}/.staging/config"
       cp -r "${path.module}/../../dbt" "${path.module}/.staging/dbt"
       rm -rf "${path.module}/.staging/dbt/target" "${path.module}/.staging/dbt/dbt_packages" "${path.module}/.staging/dbt/logs"
-      cp -r "${path.module}/../../api" "${path.module}/.staging/api"
       cp "${path.module}/../../Dockerfile" "${path.module}/.staging/Dockerfile"
       cp "${path.module}/../../requirements.txt" "${path.module}/.staging/requirements.txt"
       find "${path.module}/.staging" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true

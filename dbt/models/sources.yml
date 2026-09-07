@@ -3,7 +3,7 @@ version: 2
 sources:
   - name: staging
     description: >
-      Couche Silver (Bloc 1, Tableau 5) : tables STAGING chargées par pipeline/load_cloud.py via
+      Couche Silver (Bloc 1, Tableau 5) : tables STAGING chargées par apps/pipeline/load_cloud.py via
       COPY INTO avec inférence de schéma — colonnes brutes, noms français d'origine conservés.
     schema: STAGING
     tables:

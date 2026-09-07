@@ -24,7 +24,7 @@ resource "aws_secretsmanager_secret_version" "etl_cloud_credentials" {
   })
 }
 
-# Clé de l'API cloud (api/main.py, require_api_key) : générée par Terraform plutôt que la clé de
+# Clé de l'API cloud (apps/api/main.py, require_api_key) : générée par Terraform plutôt que la clé de
 # dev en dur du docker-compose.yml racine — nécessaire depuis que l'API est réellement exposée
 # publiquement via la DMZ (dmz.tf), pas juste en local.
 resource "random_password" "api_key" {
@@ -34,7 +34,7 @@ resource "random_password" "api_key" {
 
 resource "aws_secretsmanager_secret" "api_key" {
   name        = "${local.name_prefix}/api-key"
-  description = "Cle(s) API acceptees par l'API cloud (en-tete X-API-Key, cf. api/main.py)"
+  description = "Cle(s) API acceptees par l'API cloud (en-tete X-API-Key, cf. apps/api/main.py)"
 }
 
 resource "aws_secretsmanager_secret_version" "api_key" {

@@ -54,17 +54,17 @@ propre à chaque environnement et vit dans `config/dev.yaml`, `config/preprod.ya
 
 ```bash
 # Pipeline complet (téléchargement des CSV si absents + transformation) pour un environnement
-./.venv/bin/python pipeline/run.py --env dev
+./.venv/bin/python apps/pipeline/run.py --env dev
 
 # Sans --env : utilise APP_ENV défini dans .env
-./.venv/bin/python pipeline/run.py
+./.venv/bin/python apps/pipeline/run.py
 
 # Sauter le téléchargement (CSV déjà présents dans data/raw/)
-./.venv/bin/python pipeline/run.py --env preprod --skip-download
+./.venv/bin/python apps/pipeline/run.py --env preprod --skip-download
 
 # Étapes séparées
-./.venv/bin/python pipeline/ingest.py            # télécharge les CSV dans data/raw/
-./.venv/bin/python pipeline/transform.py --env prod   # harmonise + charge dans environments/prod/db_prod.duckdb
+./.venv/bin/python apps/pipeline/ingest.py            # télécharge les CSV dans data/raw/
+./.venv/bin/python apps/pipeline/transform.py --env prod   # harmonise + charge dans environments/prod/db_prod.duckdb
 
 # Tests statistiques (ANOVA H1, Spearman H2) sur les données de l'environnement
 ./.venv/bin/python analysis/stats_tests.py --env preprod
@@ -85,7 +85,7 @@ propre à chaque environnement et vit dans `config/dev.yaml`, `config/preprod.ya
 ./.venv/bin/pytest tests/ -v
 ```
 
-Tests unitaires sur `pipeline/transform.py` (harmonisation du schéma des 3 sources, calcul de
+Tests unitaires sur `apps/pipeline/transform.py` (harmonisation du schéma des 3 sources, calcul de
 `taux_ponctualite`/`taux_annulation`, gestion des cas à 0 train programmé/circulé, sélection de
 l'échantillon dev) à partir de fixtures CSV réduites dans `tests/fixtures/`. Exécutés en CI à
 chaque push/PR sur `preprod`/`prod`, en plus du smoke test end-to-end du pipeline complet.
@@ -97,12 +97,12 @@ gares, ponctualité par type de ligne/liaison/mois) — reflète les tables rée
 décrite dans le Bloc 1 (`dim_stations`, `fact_regularite`), pas de données factices.
 
 ```bash
-API_KEYS=dev-local-key APP_ENV=preprod ./.venv/bin/uvicorn api.main:app --reload --no-access-log
+API_KEYS=dev-local-key APP_ENV=preprod ./.venv/bin/uvicorn apps.api.main:app --reload --no-access-log
 ```
 
 RGPD (aligné sur le Bloc 1, partie 5.1/d) : les access logs bruts d'uvicorn (IP en clair) sont
 désactivés (`--no-access-log`) et remplacés par un log applicatif qui anonymise systématiquement
-l'IP (deux derniers octets masqués) avant écriture — voir `anonymize_ip()` dans `api/main.py`.
+l'IP (deux derniers octets masqués) avant écriture — voir `anonymize_ip()` dans `apps/api/main.py`.
 
 Documentation interactive : http://127.0.0.1:8000/docs
 
@@ -123,7 +123,7 @@ sondes). Clé(s) valides définies par la variable `API_KEYS` (voir `.env.exampl
 Chiffrement en transit (C1.4.2) : `docker compose up api caddy` démarre en plus un reverse-proxy
 Caddy qui termine le TLS avec sa CA interne (pas de nom de domaine requis) sur
 https://localhost:8443 — le navigateur avertit sur le certificat (CA locale, attendu). Voir
-`caddy/Caddyfile`.
+`ops/caddy/Caddyfile`.
 
 ## Monitoring (Prometheus + Grafana)
 
@@ -131,9 +131,9 @@ https://localhost:8443 — le navigateur avertit sur le certificat (CA locale, a
 docker compose up api prometheus grafana
 ```
 
-- Prometheus scrape `GET /metrics` de l'API toutes les 10s (`monitoring/prometheus.yml`)
+- Prometheus scrape `GET /metrics` de l'API toutes les 10s (`ops/monitoring/prometheus.yml`)
 - Grafana sur http://localhost:3030 (admin/admin) — datasource et dashboard provisionnés
-  automatiquement (`monitoring/grafana/provisioning/`) : requêtes/s par endpoint, latence p95,
+  automatiquement (`ops/monitoring/grafana/provisioning/`) : requêtes/s par endpoint, latence p95,
   total requêtes, erreurs, répartition par statut HTTP
 
 ## Utilisation (Docker)
@@ -157,7 +157,7 @@ Ne jamais écrire les résultats du dossier depuis **dev** : toujours repasser p
 
 ## Pipeline cloud (Bloc 1, partie 3.4)
 
-`pipeline/load_cloud.py` réalise le flux Bronze -> Silver réel : upload des CSV bruts vers le
+`apps/pipeline/load_cloud.py` réalise le flux Bronze -> Silver réel : upload des CSV bruts vers le
 bucket S3 (partitionné opérateur/type/date), puis `COPY INTO` Snowflake STAGING avec inférence de
 schéma automatique (aucune colonne codée en dur). Nécessite l'infra Terraform déployée
 (`infra/terraform/`, voir `infra/README.md`) et les credentials Snowflake du rôle `ETL_LOADER` :
@@ -166,29 +166,35 @@ schéma automatique (aucune colonne codée en dur). Nécessite l'infra Terraform
 BRONZE_BUCKET=<sortie bronze_bucket_name> \
 SNOWFLAKE_ORGANIZATION_NAME=... SNOWFLAKE_ACCOUNT_NAME=... SNOWFLAKE_USER=SVC_ETL_LOADER \
 SNOWFLAKE_ROLE=ETL_LOADER SNOWFLAKE_PRIVATE_KEY="$(cat ~/.ssh/snowflake_etl_loader_key.p8)" \
-python pipeline/load_cloud.py
+python apps/pipeline/load_cloud.py
 ```
 
 Sur l'infra cloud (EC2 Applicative), ce flux est orchestré par un DAG Airflow hebdomadaire
-(`cloud/airflow/dags/pipeline_dag.py` : `ingest -> transform -> load_cloud -> dbt`) ; `dbt/`
+(`infra/cloud/airflow/dags/pipeline_dag.py` : `ingest -> transform -> load_cloud -> dbt`) ; `dbt/`
 promeut ensuite STAGING vers MART (Gold) — `dim_stations` et `fact_regularite`, mêmes règles
-d'harmonisation que `pipeline/transform.py`, 5 tests dbt. En parallèle, un producer/consumer Kafka
-(`cloud/`) ingère en continu le flux GTFS-RT public de la SNCF vers RDS PostgreSQL
+d'harmonisation que `apps/pipeline/transform.py`, 5 tests dbt. En parallèle, un producer/consumer
+Kafka (`apps/streaming/`) ingère en continu le flux GTFS-RT public de la SNCF vers RDS PostgreSQL
 (`fact_realtime`, couche Silver temps réel du Bloc 1). Détails, dimensionnement et procédure
 destroy : `infra/README.md`.
 
 ## Structure du projet
 
 ```
-docs/                   documentation d'architecture du projet
-infra/terraform/        infrastructure AWS + Snowflake (Terraform), voir infra/README.md
-cloud/                  stack déployée sur l'EC2 : Kafka, producer/consumer GTFS-RT, DAG Airflow
-dbt/                    projet dbt : promotion Snowflake STAGING -> MART (Gold)
-pipeline/               ingest.py, transform.py, run.py, load_cloud.py (Bronze -> Snowflake)
-api/                    API REST FastAPI (main.py) servant les données du pipeline
-monitoring/             config Prometheus + provisioning Grafana (datasource, dashboard)
-tests/                  tests unitaires (pytest) sur pipeline/transform.py et api/main.py
+apps/
+  pipeline/             ingest.py, transform.py, run.py, load_cloud.py (Bronze -> Snowflake)
+  api/                  API REST FastAPI (main.py) servant les données du pipeline
+  streaming/            producer/consumer Kafka GTFS-RT (déployés sur l'EC2 Applicative)
 analysis/               requêtes SQL, profilage qualité, tests statistiques, graphiques, export des résultats
+notebooks/              notebook Jupyter du baromètre (dashboard)
+dbt/                    projet dbt : promotion Snowflake STAGING -> MART (Gold)
+infra/
+  terraform/            infrastructure AWS + Snowflake (Terraform), voir infra/README.md
+  cloud/                stack déployée sur l'EC2 : Kafka, docker-compose.yml, DAG Airflow
+ops/
+  caddy/                reverse-proxy TLS (démo locale)
+  monitoring/            config Prometheus + provisioning Grafana (datasource, dashboard)
+tests/                  tests unitaires (pytest) sur apps/pipeline/transform.py et apps/api/main.py
+docs/                   documentation d'architecture du projet (dossiers de certification)
 config/                 dev.yaml / preprod.yaml / prod.yaml
 environments/           bases DuckDB par environnement (non versionnées)
 data/raw/               CSV téléchargés depuis data.gouv.fr (non versionnés, régénérables via ingest.py)
