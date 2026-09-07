@@ -39,6 +39,11 @@ output "bastion_public_ip" {
   value       = aws_instance.bastion.public_ip
 }
 
+output "api_gateway_url" {
+  description = "Point d'entrée public de l'API (DMZ, cf. dmz.tf) — ex. <url>/health"
+  value       = aws_apigatewayv2_stage.default.invoke_url
+}
+
 output "snowflake_database_name" {
   value = snowflake_database.main.name
 }

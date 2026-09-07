@@ -1,15 +1,17 @@
-# Zonage réseau simplifié par rapport au Bloc 1 (4 zones : DMZ / Applicative / Données /
-# Administration). Ce build en déploie 3 sur 4, pour un motif documenté (voir infra/README.md) :
+# Zonage réseau conforme au Bloc 1 (4 zones : DMZ / Applicative / Données / Administration),
+# toutes déployées (voir infra/README.md pour le détail de chacune) :
 #   - "Applicative" -> subnet PUBLIC (pas de NAT Gateway, cf. décision coût du plan).
-#     Héberge l'instance EC2 Airflow+Kafka + l'API cloud de démo.
+#     Héberge l'instance EC2 Airflow+Kafka + l'API cloud (plus joignable qu'en interne, cf. DMZ).
 #   - "Données"      -> subnet PRIVÉ. Héberge RDS PostgreSQL, joignable uniquement depuis le
-#     security group de l'instance Applicative (et désormais du bastion, cf. bastion.tf).
+#     security group de l'instance Applicative et du bastion (cf. bastion.tf).
 #   - "Administration" -> subnet PUBLIC, héberge le bastion SSH (bastion.tf) : accès admin
 #     restreint à my_ip_cidr, rebond direct vers RDS (psql). Coexiste avec SSM (toujours actif
 #     sur l'instance Applicative) plutôt que de le remplacer — les deux mécanismes d'accès admin
 #     du Bloc 1 (bastion et agent managé) sont ainsi tous deux réellement démontrés.
-#   - "DMZ" (API Gateway dédiée) n'est pas déployée : l'API de démo tourne directement sur
-#     l'instance Applicative.
+#   - "DMZ" -> pas de subnet dédié (API Gateway est un service managé hors VPC) : voir dmz.tf.
+#     Seul point d'entrée public vers l'API, via VPC Link + NLB interne — l'instance Applicative
+#     n'est plus joignable directement depuis internet sur le port 8000 (cf. security group
+#     ec2_applicative ci-dessous, restreint au CIDR du VPC).
 
 data "aws_availability_zones" "available" {
   state = "available"
@@ -115,20 +117,23 @@ resource "aws_vpc_endpoint" "s3" {
 
 # --- Security Groups ---
 
-# Instance Applicative : AUCUNE règle entrante par défaut. SSM (agent -> AWS, sortant
-# uniquement) gère l'accès admin. Seule exception : le port de démo de l'API cloud, restreint
-# à l'IP publique de l'utilisateur.
+# Instance Applicative : AUCUNE règle entrante depuis internet. SSM (agent -> AWS, sortant
+# uniquement) gère l'accès admin. Le port de l'API cloud (8000) n'est plus ouvert qu'au VPC lui-
+# même : depuis l'introduction de la DMZ (dmz.tf), le seul chemin public vers l'API est
+# API Gateway -> VPC Link -> NLB interne -> ce port, jamais directement depuis internet.
 resource "aws_security_group" "ec2_applicative" {
-  name        = "${var.project_name}-ec2-applicative"
+  name = "${var.project_name}-ec2-applicative"
+  # description inchangée volontairement : cet argument est immuable côté AWS (le modifier force
+  # un remplacement complet du security group) — la doc à jour est dans les commentaires ci-dessus.
   description = "Airflow + Kafka + API cloud demo - zero inbound sauf API demo depuis my_ip_cidr"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "API cloud de demo (FastAPI, APP_ENV=cloud)"
+    description = "API cloud (FastAPI) - uniquement depuis le VPC (NLB de la DMZ, cf. dmz.tf)"
     from_port   = 8000
     to_port     = 8000
     protocol    = "tcp"
-    cidr_blocks = [var.my_ip_cidr]
+    cidr_blocks = [aws_vpc.main.cidr_block]
   }
 
   egress {

@@ -11,6 +11,7 @@ GTFS-RT SNCF (public, sans clé) --> Kafka (EC2) --> Postgres RDS (fact_realtime
 CSV SNCF (data.gouv.fr) --> pipeline/ingest.py --> pipeline/transform.py --> DuckDB local
                                                  --> pipeline/load_cloud.py --> S3 "bronze" --> Snowflake STAGING (Silver) --dbt--> MART (Gold)
 Airflow (EC2) orchestre ingest -> transform -> load_cloud, hebdomadaire (cf. cloud/airflow/dags/)
+Internet --> API Gateway (DMZ) --> VPC Link --> NLB interne --> EC2 Applicative:8000 (api)
 ```
 
 | Composant | Où | Fichier(s) |
@@ -20,12 +21,13 @@ Airflow (EC2) orchestre ingest -> transform -> load_cloud, hebdomadaire (cf. clo
 | IAM (etl_service, snowflake_s3_access) | AWS | `iam.tf` |
 | CloudTrail, GuardDuty | AWS | `security.tf` |
 | Budget guardrail | AWS | `budget.tf` |
-| Secrets (Snowflake, RDS) | AWS | `secrets.tf`, `rds.tf` |
+| Secrets (Snowflake, RDS, clé API) | AWS | `secrets.tf`, `rds.tf` |
 | RDS PostgreSQL (Silver temps réel) | AWS | `rds.tf` |
-| EC2 Applicative (Kafka + Airflow) | AWS | `ec2.tf` |
+| EC2 Applicative (Kafka + Airflow + API) | AWS | `ec2.tf` |
 | Bastion SSH (zone Administration) | AWS | `bastion.tf` |
+| API Gateway + VPC Link + NLB (zone DMZ) | AWS | `dmz.tf` |
 | Warehouse, database, rôles RBAC | Snowflake | `snowflake.tf` |
-| Kafka, producer/consumer GTFS-RT, DAG Airflow | applicatif (déployé sur l'EC2) | `../cloud/` |
+| Kafka, producer/consumer GTFS-RT, API, DAG Airflow | applicatif (déployé sur l'EC2) | `../cloud/` |
 
 ## Environnements (preprod / prod)
 
@@ -103,25 +105,31 @@ budget.
 | Ressource | Taille | Coût si 24/7 |
 |---|---|---|
 | EC2 `m7i-flex.large` | 2 vCPU / 8 Go | ~30 $/mois (Free Tier pour la 1ère instance seulement — voir note ci-dessous) |
+| EC2 `t3.micro` (bastion) | 2 vCPU / 1 Go | ~7 $/mois |
 | RDS `db.t3.micro` | Single-AZ, 20 Go gp3 | ~13 $/mois |
+| NLB interne (DMZ) | 1 nœud | ~17 $/mois (tarif horaire fixe, quel que soit le trafic) |
+| API Gateway (HTTP API) | — | ~1 $/million de requêtes — négligeable à ce volume |
 | Snowflake warehouse | XSMALL, auto-suspend 60s | quelques centimes/heure d'utilisation réelle |
 | S3, Secrets Manager, CloudTrail | — | < 1 $/mois à ce volume |
 
-**~43 $/mois par environnement si tout tourne en continu**, contre un budget assumé de 20 $/mois
+**~68 $/mois par environnement si tout tourne en continu**, contre un budget assumé de 20 $/mois
 (`budget_limit_usd`, dimensionné pour "un build d'une semaine, pas un mois plein" — cf.
 `variables.tf`) — **partagé entre les deux environnements** (un seul budget AWS, cf. ci-dessus),
-donc ~86 $/mois potentiels si preprod ET prod tournent en continu en parallèle. Le Free Tier AWS
+donc ~136 $/mois potentiels si preprod ET prod tournent en continu en parallèle. Le Free Tier AWS
 ne s'applique qu'à hauteur d'un quota mensuel d'heures partagé pour tout le compte, pas par
 instance : la seconde instance `m7i-flex.large` (prod) est donc facturée normalement dès que le
-quota de la première (preprod) est consommé. Décision explicite prise avec le porteur du projet :
-accepter le dépassement plutôt que découper l'infra, le temps de la démo/certification, puis
-`destroy` les deux workspaces.
+quota de la première (preprod) est consommé — et le NLB n'a de toute façon aucun volet Free Tier,
+quel que soit l'environnement. Décision explicite prise avec le porteur du projet : accepter le
+dépassement plutôt que découper l'infra, le temps de la démo/certification, puis `destroy` les
+deux workspaces.
 
-## Zonage réseau : 3 zones sur 4
+## Zonage réseau : 4 zones sur 4
 
-Le Bloc 1 décrit 4 zones (DMZ / Applicative / Données / Administration). Ce build en déploie 3 :
+Le Bloc 1 décrit 4 zones (DMZ / Applicative / Données / Administration), toutes déployées :
 - **Applicative** → subnet **public** (pas de NAT Gateway, économie assumée). Héberge l'EC2
-  (Kafka, Airflow, API cloud de démo).
+  (Kafka, Airflow, service API) — **plus joignable directement depuis internet** sur le port
+  8000 depuis l'introduction de la DMZ (le security group `ec2_applicative` ne l'autorise plus
+  que depuis le CIDR du VPC, cf. `vpc.tf`).
 - **Données** → subnet **privé**, joignable depuis le security group Applicative ET depuis le
   bastion (ci-dessous). Héberge RDS.
 - **Administration** → subnet **public** (`10.0.1.0/24`), héberge un **bastion SSH**
@@ -130,23 +138,37 @@ Le Bloc 1 décrit 4 zones (DMZ / Applicative / Données / Administration). Ce bu
   Coexiste avec **SSM** (toujours actif sur l'instance Applicative) plutôt que de le remplacer —
   les deux mécanismes d'accès admin du Bloc 1 (bastion et agent managé) sont ainsi réellement
   démontrés côte à côte, pas juste l'un ou l'autre.
-- **DMZ** (API Gateway dédiée) n'est pas déployée : l'API tourne directement sur l'instance
-  Applicative.
+- **DMZ** (`dmz.tf`) → pas de subnet dédié (API Gateway est un service managé hors VPC) : seul
+  point d'entrée public vers l'API — **API Gateway (HTTP API) → VPC Link → Network Load
+  Balancer interne (sans IP publique) → EC2 Applicative:8000**. Clé API réelle générée par
+  Terraform et stockée dans Secrets Manager (`secrets.tf`, `api_key`), plus la clé de démo en
+  dur du docker-compose racine.
 
 Se connecter au bastion :
 ```bash
 ssh -i ~/.ssh/euromobilitydatahub_bastion_key ubuntu@$(terraform output -raw bastion_public_ip)
 ```
 
+Appeler l'API via la DMZ (seul chemin qui fonctionne désormais) :
+```bash
+API_KEY=$(aws secretsmanager get-secret-value --secret-id euromobilitydatahub/api-key \
+  --query SecretString --output text | jq -r .API_KEYS)
+curl -H "X-API-Key: $API_KEY" "$(terraform output -raw api_gateway_url)stations?limit=5"
+```
+
 ## Ce qui tourne sur l'EC2
 
 Bootstrap (`templates/ec2_user_data.sh.tftpl`, exécuté une seule fois au premier démarrage) :
-installe Docker, récupère `../cloud/` (empaqueté automatiquement par Terraform à chaque apply
-via `data.archive_file.cloud_bundle`, jamais d'étape manuelle), récupère les secrets, initialise
-le schéma Postgres, puis `docker compose up -d`. Les conteneurs (`restart: unless-stopped`)
-survivent à un redémarrage de l'instance sans réexécuter le bootstrap.
+installe Docker, récupère `../cloud/` + `../api/` + `../Dockerfile` + `../requirements.txt`
+(empaquetés automatiquement par Terraform à chaque apply via `data.archive_file.cloud_bundle`,
+jamais d'étape manuelle), récupère les secrets, initialise le schéma Postgres, puis
+`docker compose up -d`. Les conteneurs (`restart: unless-stopped`) survivent à un redémarrage de
+l'instance sans réexécuter le bootstrap.
 
 Services (`../cloud/docker-compose.yml`) :
+- **api** : l'API FastAPI (`../../api/main.py`), seule cible du NLB de la DMZ — plus reçue
+  directement depuis internet (cf. "Zonage réseau" plus haut). Lit `environments/preprod/`
+  (le DAG écrit toujours dans cet environnement, quel que soit l'environnement AWS).
 - **kafka** (KRaft mono-nœud) + **producer** (poll le flux GTFS-RT public SNCF toutes les 2 min)
   + **consumer** (upsert dans `fact_realtime`, RDS).
 - **airflow** (mode `standalone`, léger) : DAG hebdomadaire `euromobilitydatahub_batch`

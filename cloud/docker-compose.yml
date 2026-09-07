@@ -68,6 +68,27 @@ services:
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
+  # Cible du NLB de la DMZ (cf. infra/terraform/dmz.tf) : seul point d'accès réel à l'API depuis
+  # ce jour, le port 8000 n'étant plus ouvert au public sur cette instance (vpc.tf).
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    entrypoint: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
+    restart: unless-stopped
+    environment:
+      # DAG Airflow (pipeline_dag.py) écrit toujours dans l'environnement preprod : l'API doit
+      # lire la même base pour servir des données réelles, quel que soit l'environnement AWS
+      # (preprod ou prod) sur lequel cette stack tourne.
+      APP_ENV: preprod
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../environments:/app/environments
+    # ${API_ENV_FILE} : idem RDS_ENV_FILE/SNOWFLAKE_ENV_FILE, positionné par le bootstrap EC2.
+    env_file:
+      - ${API_ENV_FILE:-./local-test/api.env}
+
   airflow:
     image: apache/airflow:2.10.5
     command: ["standalone"]

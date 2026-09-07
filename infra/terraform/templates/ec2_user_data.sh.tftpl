@@ -56,6 +56,10 @@ aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_
   --query SecretString --output text | jq -r 'to_entries[] | "\(.key)=\(.value)"' \
   > /opt/euromobilitydatahub/secrets/rds.env
 
+aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/api-key" \
+  --query SecretString --output text | jq -r 'to_entries[] | "\(.key)=\(.value)"' \
+  > /opt/euromobilitydatahub/secrets/api.env
+
 chmod 600 /opt/euromobilitydatahub/secrets/*.env
 
 # --- Initialisation du schéma Postgres (idempotent, cf. cloud/init.sql) ---
@@ -70,4 +74,5 @@ PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATA
 cd /opt/euromobilitydatahub/cloud
 export RDS_ENV_FILE=/opt/euromobilitydatahub/secrets/rds.env
 export SNOWFLAKE_ENV_FILE=/opt/euromobilitydatahub/secrets/snowflake.env
+export API_ENV_FILE=/opt/euromobilitydatahub/secrets/api.env
 docker compose up -d --build

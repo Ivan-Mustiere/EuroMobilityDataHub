@@ -18,10 +18,10 @@ data "aws_ami" "ubuntu" {
 }
 
 # Empaqueté à chaque `terraform plan/apply` (pas d'étape manuelle) : le DAG Airflow exécute
-# pipeline/run.py + pipeline/load_cloud.py + dbt directement (cf. ../cloud/docker-compose.yml,
-# volumes ../pipeline, ../config et ../dbt relatifs à cloud/docker-compose.yml), donc le bundle
-# doit contenir cloud/ ET pipeline/ ET config/ ET dbt/ avec la même disposition relative que dans
-# le dépôt — d'où cette étape de mise en scène (staging) avant l'archivage.
+# pipeline/run.py + pipeline/load_cloud.py + dbt directement, et le service "api" (cf.
+# ../cloud/docker-compose.yml) build l'image applicative complète (Dockerfile, api/,
+# requirements.txt) — le bundle doit donc contenir cloud/, pipeline/, config/, dbt/, api/,
+# Dockerfile et requirements.txt avec la même disposition relative que dans le dépôt.
 resource "null_resource" "stage_cloud_bundle" {
   triggers = { always_run = timestamp() }
 
@@ -37,6 +37,9 @@ resource "null_resource" "stage_cloud_bundle" {
       cp -r "${path.module}/../../config" "${path.module}/.staging/config"
       cp -r "${path.module}/../../dbt" "${path.module}/.staging/dbt"
       rm -rf "${path.module}/.staging/dbt/target" "${path.module}/.staging/dbt/dbt_packages" "${path.module}/.staging/dbt/logs"
+      cp -r "${path.module}/../../api" "${path.module}/.staging/api"
+      cp "${path.module}/../../Dockerfile" "${path.module}/.staging/Dockerfile"
+      cp "${path.module}/../../requirements.txt" "${path.module}/.staging/requirements.txt"
       find "${path.module}/.staging" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
     EOT
   }
@@ -81,6 +84,7 @@ resource "aws_instance" "applicative" {
   depends_on = [
     aws_secretsmanager_secret_version.etl_cloud_credentials,
     aws_secretsmanager_secret_version.rds_credentials,
+    aws_secretsmanager_secret_version.api_key,
     aws_s3_object.cloud_bundle,
     aws_db_instance.donnees,
   ]
