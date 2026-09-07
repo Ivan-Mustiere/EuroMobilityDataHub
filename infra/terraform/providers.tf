@@ -33,9 +33,10 @@ provider "aws" {
 
   default_tags {
     tags = {
-      Project   = "EuroMobilityDataHub"
-      ManagedBy = "terraform"
-      Purpose   = "portfolio-demo-bloc1"
+      Project     = "EuroMobilityDataHub"
+      ManagedBy   = "terraform"
+      Purpose     = "portfolio-demo-bloc1"
+      Environment = var.environment
     }
   }
 }

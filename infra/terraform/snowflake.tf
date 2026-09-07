@@ -9,7 +9,7 @@
 # C'est cette version narrative, cohérente avec criteres_evaluation.md, qui est modélisée ici.
 
 resource "snowflake_warehouse" "main" {
-  name                = "${upper(var.project_name)}_WH"
+  name                = "${upper(var.project_name)}_WH${local.env_suffix_sf}"
   warehouse_size      = var.snowflake_warehouse_size
   auto_suspend        = 60
   auto_resume         = true
@@ -18,7 +18,7 @@ resource "snowflake_warehouse" "main" {
 }
 
 resource "snowflake_database" "main" {
-  name    = upper(var.project_name)
+  name    = "${upper(var.project_name)}${local.env_suffix_sf}"
   comment = "Entrepot EuroMobilityDataHub (Bloc 1, Tableau 5 - couches Silver/Gold)"
 }
 
@@ -39,7 +39,7 @@ resource "snowflake_schema" "mart" {
 # aws_iam_role directement : voir le commentaire de ce local pour l'explication de la
 # dépendance circulaire évitée entre ce bloc et la trust policy du rôle IAM.
 resource "snowflake_storage_integration_aws" "bronze" {
-  name                      = "${upper(var.project_name)}_S3_BRONZE_INT"
+  name                      = "${upper(var.project_name)}_S3_BRONZE_INT${local.env_suffix_sf}"
   enabled                   = true
   storage_provider          = "S3"
   storage_aws_role_arn      = local.snowflake_s3_role_arn
@@ -80,12 +80,12 @@ resource "snowflake_stage_external_s3" "bronze" {
 # ACCOUNTADMIN qui exécute ce `terraform apply` (même logique que le rôle "admin" AWS, cf. iam.tf).
 
 resource "snowflake_account_role" "etl_loader" {
-  name    = "ETL_LOADER"
+  name    = "ETL_LOADER${local.env_suffix_sf}"
   comment = "Compte de service Airflow (SnowflakeOperator) - extension Snowflake du role etl_service AWS (Tableau 13) : ecriture uniquement sur STAGING"
 }
 
 resource "snowflake_account_role" "analyst" {
-  name    = "ANALYST"
+  name    = "ANALYST${local.env_suffix_sf}"
   comment = "Data analyst / chef de projet (Tableau 13) - lecture seule sur MART, aucun acces a STAGING"
 }
 
@@ -106,11 +106,13 @@ resource "snowflake_grant_account_role" "analyst_to_sysadmin" {
 # distincte de la clé personnelle ACCOUNTADMIN utilisée pour exécuter `terraform apply` — sépare
 # l'identité humaine d'administration de l'identité de service automatisée (Bloc 1, Tableau 13).
 resource "snowflake_service_user" "etl_loader" {
-  name              = "SVC_ETL_LOADER"
+  name              = "SVC_ETL_LOADER${local.env_suffix_sf}"
   comment           = "Utilisateur de service du pipeline cloud (Airflow/EC2) - cf. iam.tf pour le pendant AWS"
   default_role      = snowflake_account_role.etl_loader.name
   default_warehouse = snowflake_warehouse.main.name
-  rsa_public_key    = trimspace(file(pathexpand("~/.ssh/snowflake_etl_loader_key.pub.stripped")))
+  # Clé RSA dédiée par environnement (voir infra/README.md) : preprod garde le nom de fichier
+  # historique, prod utilise sa propre paire de clés.
+  rsa_public_key = trimspace(file(pathexpand("~/.ssh/snowflake_etl_loader_key${local.env_suffix}.pub.stripped")))
 }
 
 resource "snowflake_grant_account_role" "etl_loader_to_svc_user" {

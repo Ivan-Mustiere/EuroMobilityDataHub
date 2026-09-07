@@ -72,7 +72,7 @@ resource "aws_instance" "applicative" {
   user_data = templatefile("${path.module}/templates/ec2_user_data.sh.tftpl", {
     bucket       = aws_s3_bucket.bronze.bucket
     region       = var.aws_region
-    project_name = var.project_name
+    project_name = local.name_prefix # doit correspondre au préfixe des secrets (secrets.tf, rds.tf)
   })
   # Un changement de user_data ne recrée pas l'instance par défaut (Terraform ne le réexécute
   # qu'au prochain boot) : accepté ici, le bootstrap est idempotent et cette instance est jetable
@@ -85,5 +85,5 @@ resource "aws_instance" "applicative" {
     aws_db_instance.donnees,
   ]
 
-  tags = { Name = "${var.project_name}-applicative" }
+  tags = { Name = "${local.name_prefix}-applicative" }
 }

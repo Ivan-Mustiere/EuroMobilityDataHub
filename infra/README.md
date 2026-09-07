@@ -26,13 +26,42 @@ Airflow (EC2) orchestre ingest -> transform -> load_cloud, hebdomadaire (cf. clo
 | Warehouse, database, rôles RBAC | Snowflake | `snowflake.tf` |
 | Kafka, producer/consumer GTFS-RT, DAG Airflow | applicatif (déployé sur l'EC2) | `../cloud/` |
 
+## Environnements (preprod / prod)
+
+Chaque environnement est un **workspace Terraform** distinct (état séparé, mêmes fichiers `.tf`) :
+tout nom de ressource dont l'unicité est exigée par AWS ou Snowflake (rôle IAM, secret, base
+Snowflake, identifiant RDS...) est calculé via `local.env_suffix`/`local.env_suffix_sf`
+(`locals.tf`) — vide pour `preprod` (infra historique, jamais recréée par ce mécanisme), suffixé
+`-prod`/`_PROD` sinon. Les deux environnements sont deux stacks **entièrement indépendants**
+(VPC, EC2, RDS, warehouse/database Snowflake propres) — rien n'est partagé, à une exception :
+le budget AWS (`budget.tf`) et GuardDuty (`security.tf`) sont des ressources uniques par compte,
+donc réservées au workspace `preprod` (`count = local.is_preprod ? 1 : 0`).
+
+```bash
+# Preprod (déjà déployé, workspace "default")
+terraform workspace select default
+terraform apply
+
+# Prod (nouveau workspace, stack séparé)
+terraform workspace new prod        # une seule fois
+terraform workspace select prod
+terraform apply -var-file=prod.tfvars
+```
+
+Chaque environnement a sa **propre paire de clés RSA** pour l'utilisateur de service Snowflake
+(voir prérequis ci-dessous) : `~/.ssh/snowflake_etl_loader_key.p8` pour preprod,
+`~/.ssh/snowflake_etl_loader_key-prod.p8` pour prod — jamais partagées, permet une rotation ou
+une révocation indépendante par environnement.
+
 ## Prérequis avant `terraform apply`
 
 1. **AWS** : credentials via la chaîne par défaut du SDK (`aws configure`, ou variables
-   `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) — jamais en dur dans le repo.
-2. **Snowflake** : une paire de clés RSA (voir génération dans l'historique de session ou
-   `openssl genrsa`/`pkcs8`), la clé publique enregistrée sur l'utilisateur ACCOUNTADMIN
-   (`ALTER USER <user> SET RSA_PUBLIC_KEY='...'`), puis exporter avant `apply` :
+   `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`) — jamais en dur dans le repo. Partagées entre
+   les deux environnements (même compte AWS).
+2. **Snowflake (admin)** : une paire de clés RSA personnelle (voir génération dans l'historique
+   de session ou `openssl genrsa`/`pkcs8`), la clé publique enregistrée sur l'utilisateur
+   ACCOUNTADMIN (`ALTER USER <user> SET RSA_PUBLIC_KEY='...'`), puis exporter avant `apply` —
+   commune aux deux workspaces (même compte Snowflake) :
    ```bash
    export SNOWFLAKE_ORGANIZATION_NAME="..."
    export SNOWFLAKE_ACCOUNT_NAME="..."
@@ -41,30 +70,45 @@ Airflow (EC2) orchestre ingest -> transform -> load_cloud, hebdomadaire (cf. clo
    export SNOWFLAKE_PRIVATE_KEY="$(cat ~/.ssh/snowflake_key.p8)"
    export SNOWFLAKE_ROLE="ACCOUNTADMIN"   # doit pouvoir créer database/warehouse/integration/user
    ```
-3. **Utilisateur de service dédié** : `terraform apply` génère et enregistre automatiquement une
-   seconde paire de clés pour `SVC_ETL_LOADER` (cf. `snowflake.tf`) — celle-ci doit exister
-   localement à `~/.ssh/snowflake_etl_loader_key.p8` / `.pub.stripped` avant le premier apply
-   (le provider Snowflake lit ces fichiers via `file()`/`pathexpand()`).
-4. **`terraform.tfvars`** (gitignored, copier `terraform.tfvars.example`) : IP publique,
+3. **Utilisateur de service dédié (par environnement)** : `terraform apply` génère et enregistre
+   automatiquement une paire de clés pour `SVC_ETL_LOADER[_PROD]` (cf. `snowflake.tf`) — celle-ci
+   doit exister localement AVANT l'apply, à `~/.ssh/snowflake_etl_loader_key[-prod].p8` /
+   `.pub.stripped` (le provider Snowflake lit ces fichiers via `file()`/`pathexpand()`) :
+   ```bash
+   openssl genrsa -out ~/.ssh/snowflake_etl_loader_key-prod 2048
+   openssl pkcs8 -topk8 -inform PEM -in ~/.ssh/snowflake_etl_loader_key-prod -outform PEM -nocrypt \
+     -out ~/.ssh/snowflake_etl_loader_key-prod.p8
+   openssl rsa -in ~/.ssh/snowflake_etl_loader_key-prod -pubout -out ~/.ssh/snowflake_etl_loader_key-prod.pub
+   rm ~/.ssh/snowflake_etl_loader_key-prod
+   grep -v "PUBLIC KEY" ~/.ssh/snowflake_etl_loader_key-prod.pub | tr -d '\n' \
+     > ~/.ssh/snowflake_etl_loader_key-prod.pub.stripped
+   ```
+4. **`terraform.tfvars` / `prod.tfvars`** (gitignorés, copier les `.example`) : IP publique,
    email d'alerte budget, identifiants de compte Snowflake (non sensibles).
 
 Ordre conceptuel : le garde-fou budgétaire (`budget.tf`) est ce qu'on veut avoir en premier avant
-toute ressource facturable — dans ce build, tout est appliqué en un seul `terraform apply` (un
-seul module racine), mais en cas d'apply incrémental (`-target`), commencer par le budget.
+toute ressource facturable — dans ce build, tout est appliqué en un seul `terraform apply` par
+workspace (un seul module racine), mais en cas d'apply incrémental (`-target`), commencer par le
+budget.
 
-## Dimensionnement et coûts (estimés, région eu-west-3)
+## Dimensionnement et coûts (estimés, région eu-west-3, PAR ENVIRONNEMENT)
 
 | Ressource | Taille | Coût si 24/7 |
 |---|---|---|
-| EC2 `t3.medium` | 2 vCPU / 4 Go | ~30 $/mois |
+| EC2 `m7i-flex.large` | 2 vCPU / 8 Go | ~30 $/mois (Free Tier pour la 1ère instance seulement — voir note ci-dessous) |
 | RDS `db.t3.micro` | Single-AZ, 20 Go gp3 | ~13 $/mois |
 | Snowflake warehouse | XSMALL, auto-suspend 60s | quelques centimes/heure d'utilisation réelle |
 | S3, Secrets Manager, CloudTrail | — | < 1 $/mois à ce volume |
 
-**~43 $/mois si tout tourne en continu**, contre un budget assumé de 20 $/mois
+**~43 $/mois par environnement si tout tourne en continu**, contre un budget assumé de 20 $/mois
 (`budget_limit_usd`, dimensionné pour "un build d'une semaine, pas un mois plein" — cf.
-`variables.tf`). Décision explicite prise avec le porteur du projet : accepter le dépassement
-plutôt que découper l'infra, le temps de la démo/certification, puis `destroy`.
+`variables.tf`) — **partagé entre les deux environnements** (un seul budget AWS, cf. ci-dessus),
+donc ~86 $/mois potentiels si preprod ET prod tournent en continu en parallèle. Le Free Tier AWS
+ne s'applique qu'à hauteur d'un quota mensuel d'heures partagé pour tout le compte, pas par
+instance : la seconde instance `m7i-flex.large` (prod) est donc facturée normalement dès que le
+quota de la première (preprod) est consommé. Décision explicite prise avec le porteur du projet :
+accepter le dépassement plutôt que découper l'infra, le temps de la démo/certification, puis
+`destroy` les deux workspaces.
 
 ## Zonage réseau : 2 zones sur 4
 
@@ -131,8 +175,16 @@ cd cloud && docker compose --profile local-test up -d --build
 
 ## Destroy (fin de build/démo)
 
+Détruire **chaque workspace séparément** — un `terraform destroy` n'agit que sur le workspace
+sélectionné :
+
 ```bash
 cd infra/terraform
+
+terraform workspace select prod
+terraform destroy -var-file=prod.tfvars
+
+terraform workspace select default   # preprod
 terraform destroy
 ```
 

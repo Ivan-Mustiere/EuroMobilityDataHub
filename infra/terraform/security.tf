@@ -3,7 +3,7 @@
 # portfolio (cf. infra/README.md, section coûts).
 
 resource "aws_s3_bucket" "cloudtrail_logs" {
-  bucket = "${var.project_name}-cloudtrail-${random_id.bucket_suffix.hex}"
+  bucket = "${local.name_prefix}-cloudtrail-${random_id.bucket_suffix.hex}"
 }
 
 resource "aws_s3_bucket_public_access_block" "cloudtrail_logs" {
@@ -57,7 +57,7 @@ resource "aws_s3_bucket_policy" "cloudtrail_logs" {
 }
 
 resource "aws_cloudtrail" "main" {
-  name                          = "${var.project_name}-trail"
+  name                          = "${local.name_prefix}-trail"
   s3_bucket_name                = aws_s3_bucket.cloudtrail_logs.id
   include_global_service_events = true
   is_multi_region_trail         = false
@@ -69,7 +69,9 @@ resource "aws_cloudtrail" "main" {
 # GuardDuty : essai gratuit 30 jours, couvre toute la durée du build (cf. infra/README.md).
 # Optionnel (var.enable_guardduty) : certains comptes AWS "Free Plan" renvoient
 # SubscriptionRequiredException tant que le compte n'est pas passé en plan payant complet.
+# Un seul détecteur possible par compte+région (ressource singleton AWS) : réservé au workspace
+# preprod, comme le budget (budget.tf) — même logique.
 resource "aws_guardduty_detector" "main" {
-  count  = var.enable_guardduty ? 1 : 0
+  count  = (var.enable_guardduty && local.is_preprod) ? 1 : 0
   enable = true
 }

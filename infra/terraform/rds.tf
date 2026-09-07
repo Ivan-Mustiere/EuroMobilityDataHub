@@ -4,7 +4,7 @@
 # rotation indépendante.
 
 resource "aws_db_subnet_group" "donnees" {
-  name       = "${var.project_name}-donnees"
+  name       = "${local.name_prefix}-donnees"
   subnet_ids = [aws_subnet.donnees.id, aws_subnet.donnees_secondary.id]
 }
 
@@ -14,7 +14,7 @@ resource "random_password" "rds_master" {
 }
 
 resource "aws_secretsmanager_secret" "rds_credentials" {
-  name        = "${var.project_name}/rds-postgres"
+  name        = "${local.name_prefix}/rds-postgres"
   description = "Identifiants de connexion RDS PostgreSQL (couche Silver temps réel)"
 }
 
@@ -30,7 +30,7 @@ resource "aws_secretsmanager_secret_version" "rds_credentials" {
 }
 
 resource "aws_db_instance" "donnees" {
-  identifier     = "${var.project_name}-donnees"
+  identifier     = "${local.name_prefix}-donnees"
   engine         = "postgres"
   engine_version = "16.15"
   instance_class = var.rds_instance_class

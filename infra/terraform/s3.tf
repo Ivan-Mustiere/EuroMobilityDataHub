@@ -5,7 +5,7 @@ resource "random_id" "bucket_suffix" {
 }
 
 resource "aws_s3_bucket" "bronze" {
-  bucket = "${var.project_name}-bronze-${random_id.bucket_suffix.hex}"
+  bucket = "${local.name_prefix}-bronze-${random_id.bucket_suffix.hex}"
 }
 
 resource "aws_s3_bucket_versioning" "bronze" {

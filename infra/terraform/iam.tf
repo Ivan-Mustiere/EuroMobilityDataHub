@@ -8,7 +8,7 @@
 # modélisé via le provider Terraform Snowflake, voir snowflake.tf.
 
 resource "aws_iam_role" "etl_service" {
-  name = "${var.project_name}-etl-service"
+  name = "${local.name_prefix}-etl-service"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -26,7 +26,7 @@ resource "aws_iam_role_policy_attachment" "ssm_core" {
 }
 
 resource "aws_iam_role_policy" "s3_bronze_rw" {
-  name = "${var.project_name}-etl-s3-bronze-rw"
+  name = "${local.name_prefix}-etl-s3-bronze-rw"
   role = aws_iam_role.etl_service.id
 
   policy = jsonencode({
@@ -42,7 +42,7 @@ resource "aws_iam_role_policy" "s3_bronze_rw" {
 }
 
 resource "aws_iam_role_policy" "secrets_read" {
-  name = "${var.project_name}-etl-secrets-read"
+  name = "${local.name_prefix}-etl-secrets-read"
   role = aws_iam_role.etl_service.id
 
   policy = jsonencode({
@@ -51,14 +51,14 @@ resource "aws_iam_role_policy" "secrets_read" {
       {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
-        Resource = "arn:aws:secretsmanager:${var.aws_region}:*:secret:${var.project_name}/*"
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:*:secret:${local.name_prefix}/*"
       }
     ]
   })
 }
 
 resource "aws_iam_instance_profile" "etl_service" {
-  name = "${var.project_name}-etl-service"
+  name = "${local.name_prefix}-etl-service"
   role = aws_iam_role.etl_service.name
 }
 
@@ -73,7 +73,7 @@ resource "aws_iam_instance_profile" "etl_service" {
 # (describe_output) par cette intégration. Le format d'un ARN IAM étant déterministe (compte +
 # nom), les deux ressources peuvent se référencer sans cycle.
 locals {
-  snowflake_s3_role_name = "${var.project_name}-snowflake-s3-access"
+  snowflake_s3_role_name = "${local.name_prefix}-snowflake-s3-access"
   snowflake_s3_role_arn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/${local.snowflake_s3_role_name}"
 }
 
@@ -96,7 +96,7 @@ resource "aws_iam_role" "snowflake_s3_access" {
 }
 
 resource "aws_iam_role_policy" "snowflake_s3_bronze_read" {
-  name = "${var.project_name}-snowflake-s3-bronze-ro"
+  name = "${local.name_prefix}-snowflake-s3-bronze-ro"
   role = aws_iam_role.snowflake_s3_access.id
 
   policy = jsonencode({

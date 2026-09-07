@@ -1,3 +1,13 @@
+variable "environment" {
+  description = "Environnement déployé (preprod|prod) — chaque valeur correspond à un workspace Terraform distinct (voir infra/README.md, section environnements). \"preprod\" ne suffixe aucun nom de ressource, pour ne pas casser l'infra déjà déployée avant l'introduction de cette variable."
+  type        = string
+  default     = "preprod"
+  validation {
+    condition     = contains(["preprod", "prod"], var.environment)
+    error_message = "environment doit valoir \"preprod\" ou \"prod\"."
+  }
+}
+
 variable "aws_region" {
   description = "Région AWS (proche du compte Snowflake choisi pour limiter la latence RDS<->Snowflake)"
   type        = string

@@ -27,7 +27,11 @@ output "etl_service_instance_profile" {
 }
 
 output "guardduty_detector_id" {
-  value = var.enable_guardduty ? aws_guardduty_detector.main[0].id : null
+  value = (var.enable_guardduty && local.is_preprod) ? aws_guardduty_detector.main[0].id : null
+}
+
+output "environment" {
+  value = var.environment
 }
 
 output "snowflake_database_name" {
