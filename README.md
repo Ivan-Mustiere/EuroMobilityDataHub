@@ -97,7 +97,7 @@ gares, ponctualité par type de ligne/liaison/mois) — reflète les tables rée
 décrite dans le Bloc 1 (`dim_stations`, `fact_regularite`), pas de données factices.
 
 ```bash
-APP_ENV=preprod ./.venv/bin/uvicorn api.main:app --reload --no-access-log
+API_KEYS=dev-local-key APP_ENV=preprod ./.venv/bin/uvicorn api.main:app --reload --no-access-log
 ```
 
 RGPD (aligné sur le Bloc 1, partie 5.1/d) : les access logs bruts d'uvicorn (IP en clair) sont
@@ -106,14 +106,24 @@ l'IP (deux derniers octets masqués) avant écriture — voir `anonymize_ip()` d
 
 Documentation interactive : http://127.0.0.1:8000/docs
 
-| Endpoint | Description |
-|---|---|
-| `GET /health` | Statut + environnement actif |
-| `GET /stations` | Référentiel des gares (`q` = filtre nom, `limit`) |
-| `GET /stations/{station_id}` | Détail d'une gare |
-| `GET /regularite` | Ponctualité/retard (filtres `type_ligne`, `mois`, `axe_label`, `limit`) |
-| `GET /regularite/stats` | Moyennes par type de ligne |
-| `GET /metrics` | Métriques Prometheus (requêtes, latence par endpoint) |
+Contrôle d'accès (Bloc 1, Tableau 13 — rôle `api_consumer`) : `/stations*` et `/regularite*`
+exigent l'en-tête `X-API-Key` (401 sinon) et sont limités à 30 requêtes/minute par clé (429
+au-delà). `/health` et `/metrics` restent ouverts, nécessaires à la supervision (Prometheus,
+sondes). Clé(s) valides définies par la variable `API_KEYS` (voir `.env.example`).
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `GET /health` | non | Statut + environnement actif |
+| `GET /stations` | oui | Référentiel des gares (`q` = filtre nom, `limit`) |
+| `GET /stations/{station_id}` | oui | Détail d'une gare |
+| `GET /regularite` | oui | Ponctualité/retard (filtres `type_ligne`, `mois`, `axe_label`, `limit`) |
+| `GET /regularite/stats` | oui | Moyennes par type de ligne |
+| `GET /metrics` | non | Métriques Prometheus (requêtes, latence par endpoint) |
+
+Chiffrement en transit (C1.4.2) : `docker compose up api caddy` démarre en plus un reverse-proxy
+Caddy qui termine le TLS avec sa CA interne (pas de nom de domaine requis) sur
+https://localhost:8443 — le navigateur avertit sur le certificat (CA locale, attendu). Voir
+`caddy/Caddyfile`.
 
 ## Monitoring (Prometheus + Grafana)
 

@@ -14,13 +14,21 @@ from typing import Optional
 
 import duckdb
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 load_dotenv()
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 APP_ENV = os.getenv("APP_ENV", "dev")
+
+# Rôle api_consumer (Bloc 1, Tableau 13) : accès en lecture seule aux endpoints de données,
+# identifié par une clé API, avec quotas de requêtes. Pas de clé configurée -> aucun accès
+# (échec fermé), plutôt qu'une API ouverte par erreur de configuration en prod.
+VALID_API_KEYS = {k.strip() for k in os.getenv("API_KEYS", "").split(",") if k.strip()}
 DB_PATHS = {
     "dev": ROOT / "environments" / "dev" / "db_dev.duckdb",
     "preprod": ROOT / "environments" / "preprod" / "db_preprod.duckdb",
@@ -66,11 +74,18 @@ app = FastAPI(
         "EuroMobilityDataHub à partir de données ouvertes SNCF (licence ODbL).\n\n"
         "Cette documentation interactive (Swagger) s'adresse aux profils techniques : elle "
         "permet de tester chaque endpoint directement depuis le navigateur. Pour une prise en "
-        "main non technique, voir le guide `docs/Guide_prise_en_main_OEMF.md`."
+        "main non technique, voir le guide `docs/Guide_prise_en_main_OEMF.md`.\n\n"
+        "Accès aux données (`/stations*`, `/regularite*`) : en-tête `X-API-Key` requis, "
+        "30 requêtes/minute par clé (rôle api_consumer, Bloc 1 Tableau 13). "
+        "`/health` et `/metrics` restent ouverts (supervision)."
     ),
     version="0.1.0",
     openapi_tags=TAGS_METADATA,
 )
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 REQUEST_COUNT = Counter(
     "api_requests_total", "Nombre total de requêtes reçues par l'API", ["method", "path", "status"]
@@ -78,6 +93,14 @@ REQUEST_COUNT = Counter(
 REQUEST_LATENCY = Histogram(
     "api_request_duration_seconds", "Durée des requêtes API, en secondes", ["method", "path"]
 )
+
+
+def require_api_key(x_api_key: Optional[str] = Header(None, alias="X-API-Key")) -> None:
+    if not x_api_key or x_api_key not in VALID_API_KEYS:
+        raise HTTPException(
+            status_code=401,
+            detail="Clé API manquante ou invalide (en-tête X-API-Key requis, cf. rôle api_consumer)",
+        )
 
 
 def anonymize_ip(ip: str) -> str:
@@ -154,8 +177,11 @@ def health():
     tags=["gares"],
     summary="Lister les gares du référentiel",
     response_description="Liste des gares correspondant au filtre, avec coordonnées GPS",
+    dependencies=[Depends(require_api_key)],
 )
+@limiter.limit("30/minute")
 def list_stations(
+    request: Request,
     q: Optional[str] = Query(None, description="Filtre sur le nom de gare (recherche partielle)"),
     limit: int = Query(50, le=500),
 ):
@@ -182,8 +208,10 @@ def list_stations(
     tags=["gares"],
     summary="Récupérer une gare par son identifiant",
     response_description="Détail de la gare (nom, trigramme, code UIC, coordonnées GPS)",
+    dependencies=[Depends(require_api_key)],
 )
-def get_station(station_id: str):
+@limiter.limit("30/minute")
+def get_station(request: Request, station_id: str):
     con = get_connection()
     try:
         row = con.execute(
@@ -202,8 +230,11 @@ def get_station(station_id: str):
     tags=["régularité"],
     summary="Lister les indicateurs mensuels de régularité",
     response_description="Lignes de régularité (ponctualité, annulations, retard moyen) filtrées",
+    dependencies=[Depends(require_api_key)],
 )
+@limiter.limit("30/minute")
 def list_regularite(
+    request: Request,
     type_ligne: Optional[str] = Query(None, description="grande_vitesse | regional | intercite"),
     mois: Optional[str] = Query(None, description="YYYY-MM"),
     axe_label: Optional[str] = Query(None, description="Filtre partiel sur le libellé de l'axe (liaison ou région)"),
@@ -243,8 +274,10 @@ def list_regularite(
     tags=["régularité"],
     summary="Moyennes de ponctualité, annulation et retard par type de ligne",
     response_description="Une ligne par type de ligne (TER, Grande Vitesse, Intercités) avec ses moyennes",
+    dependencies=[Depends(require_api_key)],
 )
-def regularite_stats():
+@limiter.limit("30/minute")
+def regularite_stats(request: Request):
     con = get_connection()
     try:
         rows = con.execute(

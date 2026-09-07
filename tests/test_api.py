@@ -25,7 +25,9 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setitem(api_main.DB_PATHS, "dev", db_path)
     monkeypatch.setattr(api_main, "APP_ENV", "dev")
-    return TestClient(api_main.app)
+    monkeypatch.setattr(api_main, "VALID_API_KEYS", {"test-key"})
+    api_main.limiter.reset()
+    return TestClient(api_main.app, headers={"X-API-Key": "test-key"})
 
 
 def test_health(client):
@@ -66,6 +68,30 @@ def test_list_regularite_filter_by_type_ligne(client):
     rows = response.json()
     assert len(rows) == 4
     assert all(row["type_ligne"] == "grande_vitesse" for row in rows)
+
+
+def test_stations_without_api_key_rejected(client):
+    response = client.get("/stations", headers={"X-API-Key": ""})
+    assert response.status_code == 401
+
+
+def test_stations_with_wrong_api_key_rejected(client):
+    response = client.get("/stations", headers={"X-API-Key": "not-the-right-key"})
+    assert response.status_code == 401
+
+
+def test_health_and_metrics_do_not_require_api_key(client):
+    response = client.get("/health", headers={"X-API-Key": ""})
+    assert response.status_code == 200
+    response = client.get("/metrics", headers={"X-API-Key": ""})
+    assert response.status_code == 200
+
+
+def test_stations_quota_enforced(client):
+    for _ in range(30):
+        assert client.get("/stations").status_code == 200
+    response = client.get("/stations")
+    assert response.status_code == 429
 
 
 def test_regularite_stats(client):

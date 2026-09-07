@@ -37,11 +37,25 @@ services:
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     environment:
       - APP_ENV=${API_ENV:-preprod}
+      - API_KEYS=${API_KEYS:-dev-local-key}
     entrypoint: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     ports:
       - "8000:8000"
     volumes:
       - ./environments:/app/environments
+
+  # Chiffrement en transit (C1.4.2) : TLS terminé par Caddy (CA interne, pas de domaine requis
+  # pour la démo). Accès : https://localhost:8443 (le navigateur avertit sur le certificat local,
+  # c'est attendu — voir caddy/Caddyfile).
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      - api
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
 
   prometheus:
     image: prom/prometheus:latest
@@ -80,3 +94,4 @@ services:
 
 volumes:
   metabase-data:
+  caddy-data:
