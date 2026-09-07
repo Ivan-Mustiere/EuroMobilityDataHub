@@ -2,6 +2,11 @@ name: Preprod pipeline
 
 on:
   workflow_dispatch:
+  # Automatisation planifiée (C1.1.3) : la donnée source SNCF (ponctualité mensuelle) n'a pas
+  # besoin d'un rafraîchissement quotidien — un cron hebdomadaire garantit l'actualisation sans
+  # surcharger la source, cohérent avec la cadence de Dependabot (.github/dependabot.yml).
+  schedule:
+    - cron: "0 4 * * 1" # tous les lundis à 04:00 UTC
 
 jobs:
   run-preprod:

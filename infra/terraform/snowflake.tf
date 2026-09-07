@@ -52,12 +52,18 @@ resource "snowflake_file_format_csv" "bronze_csv" {
   schema   = snowflake_schema.staging.name
   name     = "SNCF_CSV"
 
-  field_delimiter              = ","
-  skip_header                  = 1
+  # Format réel des exports data.gouv.fr (vérifié sur les fichiers bruts) : point-virgule,
+  # UTF-8 avec BOM, champs commentaires entre guillemets contenant des retours à la ligne.
+  # parse_header (et non skip_header) : requis par COPY INTO ... MATCH_BY_COLUMN_NAME, les deux
+  # options étant mutuellement exclusives côté Snowflake.
+  field_delimiter              = ";"
+  parse_header                 = true
   field_optionally_enclosed_by = "\""
   empty_field_as_null          = true
   null_if                      = ["", "NULL"]
-  comment                      = "Format des CSV SNCF deposes dans le bucket Bronze"
+  multi_line                   = true
+  skip_byte_order_mark         = true
+  comment                      = "Format des CSV SNCF (point-virgule) deposes dans le bucket Bronze"
 }
 
 resource "snowflake_stage_external_s3" "bronze" {
@@ -81,6 +87,35 @@ resource "snowflake_account_role" "etl_loader" {
 resource "snowflake_account_role" "analyst" {
   name    = "ANALYST"
   comment = "Data analyst / chef de projet (Tableau 13) - lecture seule sur MART, aucun acces a STAGING"
+}
+
+# Rattachement des rôles custom à SYSADMIN (bonne pratique RBAC Snowflake) : sans ça, seul
+# ACCOUNTADMIN les voit/gère, ce qui reproduit le problème que le rôle "admin" AWS évite déjà
+# (cf. commentaire ci-dessus) - un seul compte tout-puissant sans hiérarchie de délégation.
+resource "snowflake_grant_account_role" "etl_loader_to_sysadmin" {
+  role_name        = snowflake_account_role.etl_loader.name
+  parent_role_name = "SYSADMIN"
+}
+
+resource "snowflake_grant_account_role" "analyst_to_sysadmin" {
+  role_name        = snowflake_account_role.analyst.name
+  parent_role_name = "SYSADMIN"
+}
+
+# Utilisateur de service (Airflow sur l'EC2 Applicative, cf. ec2.tf) : clé RSA dédiée et
+# distincte de la clé personnelle ACCOUNTADMIN utilisée pour exécuter `terraform apply` — sépare
+# l'identité humaine d'administration de l'identité de service automatisée (Bloc 1, Tableau 13).
+resource "snowflake_service_user" "etl_loader" {
+  name              = "SVC_ETL_LOADER"
+  comment           = "Utilisateur de service du pipeline cloud (Airflow/EC2) - cf. iam.tf pour le pendant AWS"
+  default_role      = snowflake_account_role.etl_loader.name
+  default_warehouse = snowflake_warehouse.main.name
+  rsa_public_key    = trimspace(file(pathexpand("~/.ssh/snowflake_etl_loader_key.pub.stripped")))
+}
+
+resource "snowflake_grant_account_role" "etl_loader_to_svc_user" {
+  role_name = snowflake_account_role.etl_loader.name
+  user_name = snowflake_service_user.etl_loader.name
 }
 
 resource "snowflake_grant_privileges_to_account_role" "etl_loader_warehouse_usage" {

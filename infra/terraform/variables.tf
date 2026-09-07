@@ -27,9 +27,9 @@ variable "budget_limit_usd" {
 }
 
 variable "ec2_instance_type" {
-  description = "Type d'instance pour l'hôte Airflow+Kafka (voir infra/README.md pour le dimensionnement)"
+  description = "Type d'instance pour l'hôte Airflow+Kafka — doit être éligible Free Tier sur ce compte AWS (voir infra/README.md)"
   type        = string
-  default     = "t3.medium"
+  default     = "m7i-flex.large"
 }
 
 variable "rds_instance_class" {
@@ -48,4 +48,17 @@ variable "snowflake_warehouse_size" {
   description = "Taille du warehouse Snowflake — XS suffit pour une démo (voir infra/README.md)"
   type        = string
   default     = "XSMALL"
+}
+
+# Non sensibles (identifiants de compte, pas des secrets) mais nécessaires à Terraform pour
+# construire le secret Secrets Manager consommé par l'EC2 (cf. secrets.tf) — le provider
+# Snowflake lui-même reste authentifié uniquement par variables d'environnement (providers.tf).
+variable "snowflake_organization_name" {
+  description = "Identifiant d'organisation Snowflake (visible dans Snowsight, coin bas gauche)"
+  type        = string
+}
+
+variable "snowflake_account_name" {
+  description = "Nom de compte Snowflake (visible dans Snowsight, coin bas gauche)"
+  type        = string
 }

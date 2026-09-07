@@ -88,6 +88,10 @@ def test_health_and_metrics_do_not_require_api_key(client):
 
 
 def test_stations_quota_enforced(client):
+    # Fenêtre fixe basée sur l'horloge réelle (slowapi) : ce test peut très rarement échouer si
+    # les 31 appels chevauchent exactement un changement de minute (le compteur redémarre alors
+    # à 0). Flake connu et accepté plutôt que d'ajouter une dépendance de mock de temps pour un
+    # cas aussi marginal.
     for _ in range(30):
         assert client.get("/stations").status_code == 200
     response = client.get("/stations")

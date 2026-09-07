@@ -50,18 +50,34 @@ Acquis par compétence.
 
 ## Comment ce dépôt répond à chaque critère
 
-- **C1.1.x / C1.2.x / C1.3.x / C1.4.x** : couverts par le texte du Bloc 1 (stratégie/architecture
-  cible) — le code de ce dépôt n'implémente que l'équivalent local (voir `claude.md`), il ne
-  démontre pas ces critères par lui-même.
+- **C1.1.1/C1.2.1/C1.3.1** (stratégies, choix technos) : couverts par le texte du Bloc 1
+  (architecture cible).
+- **C1.1.2** (techniques de collecte) : `pipeline/ingest.py`, `analysis/queries.sql`.
+- **C1.1.3** (automatisation) : cron hebdomadaire réel (`.github/workflows/preprod.yml`) + DAG
+  Airflow (`cloud/airflow/dags/pipeline_dag.py`) sur l'EC2 Applicative + flux temps réel Kafka
+  (`cloud/kafka-app/producer.py`, poll GTFS-RT SNCF toutes les 2 min).
+- **C1.2.2** (base de données + solution Big Data) : DuckDB (réel, local) + Snowflake STAGING/MART
+  et bucket S3 bronze réellement déployés et peuplés (`pipeline/load_cloud.py`, voir
+  `infra/terraform/snowflake.tf`/`s3.tf`) + RDS PostgreSQL (`fact_realtime`, alimentée en continu
+  par `cloud/kafka-app/consumer.py`, voir `infra/terraform/rds.tf`).
+- **C1.3.2** (transformation) : `pipeline/transform.py`.
+- **C1.3.3** (ETL + orchestration) : `pipeline/run.py` + `pipeline/load_cloud.py`, orchestrés par
+  le DAG Airflow ci-dessus — orchestration réelle, pas un pseudo-code d'annexe.
+- **C1.4.1** (politique de sécurité) : anonymisation RGPD + clé API + quotas (`api/main.py`), IAM
+  least-privilege (`infra/terraform/iam.tf`), secrets réellement stockés et consommés
+  (`infra/terraform/secrets.tf`, `rds.tf`) — plus une politique déclarée, un mécanisme qui tourne.
+- **C1.4.2** (architecture sécurisée multicouche) : zonage réseau + security groups
+  (`infra/terraform/vpc.tf`), chiffrement au repos S3/RDS, chiffrement en transit local
+  (`caddy/Caddyfile`, TLS).
 - **C2.1.3** (requêtes/calculs) : `analysis/queries.sql`, `analysis/export_results.py`,
   `pipeline/transform.py`.
 - **C2.1.4** (tests statistiques) : `analysis/stats_tests.py` (ANOVA H1 + η², Spearman H2, α=0,05).
 - **C2.2.1** (visualisation) : `analysis/charts.py` (palette Okabe-Ito, contraste WCAG AA) +
   dashboard Metabase.
-- **C2.3.2** (documentation technique) : `README.md` + `docs/Bloc_2.docx` (6.2).
+- **C2.3.2** (documentation technique) : `README.md` + `infra/README.md` + `docs/Bloc_2.docx` (6.2).
 - **C3.2.1/C3.2.2** (planning/suivi) : historique Git réel (dates de commits/PR) + gouvernance de
   branches (`preprod`/`prod` protégées, CI `build-and-smoke-test`) comme outil de suivi, `pytest`
-  (48 tests) comme indicateur de stabilité.
+  (52 tests) comme indicateur de stabilité.
 - **C3.3.3** (arbitrage) : restriction du périmètre à la SNCF (Bloc 2, 2.2) — décision réelle et
   documentée, prise plutôt que de compléter par des données fictives.
 - **C3.4.1** (veille) : Dependabot (dépôt GitHub) + Google Alertes ; résultat concret illustré par

@@ -14,6 +14,14 @@ terraform {
       source  = "snowflakedb/snowflake"
       version = "~> 2.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.2"
+    }
   }
 
   # Backend local volontaire : projet solo d'une semaine, pas de bootstrap S3/DynamoDB

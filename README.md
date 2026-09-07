@@ -155,11 +155,32 @@ fichiers écrits dans les volumes t'appartiennent plutôt qu'à `root`.
 Ne jamais écrire les résultats du dossier depuis **dev** : toujours repasser par **preprod** puis
 **prod**.
 
+## Pipeline cloud (Bloc 1, partie 3.4)
+
+`pipeline/load_cloud.py` réalise le flux Bronze -> Silver réel : upload des CSV bruts vers le
+bucket S3 (partitionné opérateur/type/date), puis `COPY INTO` Snowflake STAGING avec inférence de
+schéma automatique (aucune colonne codée en dur). Nécessite l'infra Terraform déployée
+(`infra/terraform/`, voir `infra/README.md`) et les credentials Snowflake du rôle `ETL_LOADER` :
+
+```bash
+BRONZE_BUCKET=<sortie bronze_bucket_name> \
+SNOWFLAKE_ORGANIZATION_NAME=... SNOWFLAKE_ACCOUNT_NAME=... SNOWFLAKE_USER=SVC_ETL_LOADER \
+SNOWFLAKE_ROLE=ETL_LOADER SNOWFLAKE_PRIVATE_KEY="$(cat ~/.ssh/snowflake_etl_loader_key.p8)" \
+python pipeline/load_cloud.py
+```
+
+Sur l'infra cloud (EC2 Applicative), ce flux est orchestré par un DAG Airflow hebdomadaire
+(`cloud/airflow/dags/pipeline_dag.py`) ; en parallèle, un producer/consumer Kafka (`cloud/`)
+ingère en continu le flux GTFS-RT public de la SNCF vers RDS PostgreSQL (`fact_realtime`, couche
+Silver temps réel du Bloc 1). Détails, dimensionnement et procédure destroy : `infra/README.md`.
+
 ## Structure du projet
 
 ```
 docs/                   documentation d'architecture du projet
-pipeline/               ingest.py, transform.py, run.py
+infra/terraform/        infrastructure AWS + Snowflake (Terraform), voir infra/README.md
+cloud/                  stack déployée sur l'EC2 : Kafka, producer/consumer GTFS-RT, DAG Airflow
+pipeline/               ingest.py, transform.py, run.py, load_cloud.py (Bronze -> Snowflake)
 api/                    API REST FastAPI (main.py) servant les données du pipeline
 monitoring/             config Prometheus + provisioning Grafana (datasource, dashboard)
 tests/                  tests unitaires (pytest) sur pipeline/transform.py et api/main.py

@@ -9,6 +9,11 @@ ec2_instance_type   = "t3.medium"
 rds_instance_class  = "db.t3.micro"
 snowflake_warehouse_size = "XSMALL"
 
+# Non sensibles (identifiants de compte) mais nécessaires pour construire le secret Secrets
+# Manager consommé par l'EC2 (cf. secrets.tf) — visibles dans Snowsight, coin bas gauche.
+snowflake_organization_name = "tqjwlut"
+snowflake_account_name      = "ke07809"
+
 # Snowflake : credentials NON stockées ici (voir providers.tf) — à exporter dans le shell avant
 # `terraform apply` :
 #   export SNOWFLAKE_ORGANIZATION_NAME="..."
