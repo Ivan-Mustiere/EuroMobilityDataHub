@@ -46,6 +46,6 @@ def test_run_generates_all_four_charts(con, tmp_path, monkeypatch):
 
     monkeypatch.setattr(charts, "get_connection", lambda env: con)
     monkeypatch.setattr(charts, "OUTPUT_DIR", tmp_path)
-    paths = charts.run("dev")
+    paths = charts.run("preprod")
     assert len(paths) == 4
     assert all(p.exists() and p.stat().st_size > 0 for p in paths)

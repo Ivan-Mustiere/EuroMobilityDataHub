@@ -36,25 +36,24 @@ Les deux branches exigent une PR + le check CI (`build-and-smoke-test`). Pas de 
 ```bash
 python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
-cp .env.example .env   # ajuster APP_ENV si besoin (dev par défaut)
+cp .env.example .env   # ajuster APP_ENV si besoin (preprod par défaut)
 ```
 
 ## Variables d'environnement (`.env`)
 
 | Variable | Rôle | Défaut |
 |---|---|---|
-| `APP_ENV` | Environnement utilisé quand `--env` n'est pas passé en ligne de commande (`dev`, `preprod`, `prod`) | `dev` |
+| `APP_ENV` | Environnement utilisé quand `--env` n'est pas passé en ligne de commande (`preprod`, `prod`) | `preprod` |
 | `HOST_UID` / `HOST_GID` | Utilisés par Docker Compose pour que les fichiers écrits dans les volumes t'appartiennent (valeurs : `id -u` / `id -g`) | `1000` |
 
 Le reste de la configuration (chemin de la base DuckDB, taille d'échantillon, niveau de log) est
-propre à chaque environnement et vit dans `config/dev.yaml`, `config/preprod.yaml`,
-`config/prod.yaml`.
+propre à chaque environnement et vit dans `config/preprod.yaml`, `config/prod.yaml`.
 
 ## Utilisation (venv local)
 
 ```bash
 # Pipeline complet (téléchargement des CSV si absents + transformation) pour un environnement
-./.venv/bin/python apps/pipeline/run.py --env dev
+./.venv/bin/python apps/pipeline/run.py --env preprod
 
 # Sans --env : utilise APP_ENV défini dans .env
 ./.venv/bin/python apps/pipeline/run.py
@@ -86,8 +85,8 @@ propre à chaque environnement et vit dans `config/dev.yaml`, `config/preprod.ya
 ```
 
 Tests unitaires sur `apps/pipeline/transform.py` (harmonisation du schéma des 3 sources, calcul de
-`taux_ponctualite`/`taux_annulation`, gestion des cas à 0 train programmé/circulé, sélection de
-l'échantillon dev) à partir de fixtures CSV réduites dans `tests/fixtures/`. Exécutés en CI à
+`taux_ponctualite`/`taux_annulation`, gestion des cas à 0 train programmé/circulé, échantillonnage
+via `apply_dev_sample`) à partir de fixtures CSV réduites dans `tests/fixtures/`. Exécutés en CI à
 chaque push/PR sur `preprod`/`prod`, en plus du smoke test end-to-end du pipeline complet.
 
 ## API
@@ -138,12 +137,11 @@ docker compose up api prometheus grafana
 
 ## Utilisation (Docker)
 
-Un service Compose par environnement (`dev`, `preprod`, `prod`), même image, seule la variable
+Un service Compose par environnement (`preprod`, `prod`), même image, seule la variable
 `APP_ENV` change. Les dossiers `data/`, `environments/`, `config/`, `outputs/` sont montés en
 volumes, donc persistés sur l'hôte entre deux runs.
 
 ```bash
-docker compose run --rm dev
 docker compose run --rm preprod --skip-download
 docker compose run --rm prod
 docker compose up api          # sert l'API sur http://localhost:8000 (APP_ENV=preprod par défaut, ajustable via API_ENV)
@@ -152,8 +150,8 @@ docker compose up api          # sert l'API sur http://localhost:8000 (APP_ENV=p
 Renseigner `HOST_UID`/`HOST_GID` dans `.env` (valeurs par défaut : `id -u`/`id -g`) pour que les
 fichiers écrits dans les volumes t'appartiennent plutôt qu'à `root`.
 
-Ne jamais écrire les résultats du dossier depuis **dev** : toujours repasser par **preprod** puis
-**prod**.
+Ne jamais écrire les résultats définitifs du dossier depuis **preprod** : toujours valider puis
+repasser par **prod**.
 
 ## Pipeline cloud (Bloc 1, partie 3.4)
 
@@ -195,7 +193,7 @@ ops/
   monitoring/            config Prometheus + provisioning Grafana (datasource, dashboard)
 tests/                  tests unitaires (pytest) sur apps/pipeline/transform.py et apps/api/main.py
 docs/                   documentation d'architecture du projet (dossiers de certification)
-config/                 dev.yaml / preprod.yaml / prod.yaml
+config/                 preprod.yaml / prod.yaml
 environments/           bases DuckDB par environnement (non versionnées)
 data/raw/               CSV téléchargés depuis data.gouv.fr (non versionnés, régénérables via ingest.py)
 data/processed/         données nettoyées (non versionné)

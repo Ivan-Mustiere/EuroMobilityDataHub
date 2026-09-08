@@ -37,7 +37,7 @@ snowflake.connector.paramstyle = "qmark"
 load_dotenv()
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-APP_ENV = os.getenv("APP_ENV", "dev")
+APP_ENV = os.getenv("APP_ENV", "preprod")
 STATIC_DIR = pathlib.Path(__file__).resolve().parent / "static"
 
 # Rôle api_consumer (Bloc 1, Tableau 13) : accès en lecture seule aux endpoints de données,
@@ -714,7 +714,7 @@ def _interpolate_trip(stops: list[dict], now: int) -> Optional[dict]:
     "/health",
     tags=["santé"],
     summary="Vérifier que l'API et sa base sont accessibles",
-    response_description="Statut du service et environnement actif (dev, preprod ou prod)",
+    response_description="Statut du service et environnement actif (preprod ou prod)",
 )
 def health():
     return {"status": "ok", "env": APP_ENV}

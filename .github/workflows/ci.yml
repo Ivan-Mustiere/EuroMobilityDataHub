@@ -25,8 +25,8 @@ jobs:
       - name: Unit tests
         run: pytest tests/ -v
 
-      - name: Smoke test pipeline (dev)
-        run: python apps/pipeline/run.py --env dev
+      - name: Smoke test pipeline (preprod)
+        run: python apps/pipeline/run.py --env preprod
 
       - name: Build Docker image
         run: docker build -t euromobilitydatahub:ci .

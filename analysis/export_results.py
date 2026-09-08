@@ -74,7 +74,7 @@ def run(env: str, output_path: pathlib.Path = OUTPUT_PATH) -> pathlib.Path:
 if __name__ == "__main__":
     load_dotenv()
     parser = argparse.ArgumentParser(description="Exporte le tableau de résultats consolidé (outputs/resultats.csv).")
-    parser.add_argument("--env", choices=["dev", "preprod", "prod"], default=None,
+    parser.add_argument("--env", choices=["preprod", "prod"], default=None,
                          help="Écrase APP_ENV (.env) pour cette exécution")
     args = parser.parse_args()
-    run(args.env or os.getenv("APP_ENV", "dev"))
+    run(args.env or os.getenv("APP_ENV", "preprod"))

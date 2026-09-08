@@ -1,6 +1,6 @@
 """Tests statistiques réels (H1 ANOVA, H2 Spearman) sur les données du pipeline.
 
-Usage : python analysis/stats_tests.py [--env dev|preprod|prod]
+Usage : python analysis/stats_tests.py [--env preprod|prod]
 
 H1 — ANOVA à un facteur : taux_ponctualite ~ type_ligne
     Adapté par rapport à l'énoncé initial du dossier ("retard ~ type de ligne") : le retard moyen
@@ -150,7 +150,7 @@ def run(env: str) -> None:
 if __name__ == "__main__":
     load_dotenv()
     parser = argparse.ArgumentParser(description="Exécute les tests statistiques H1 (ANOVA) et H2 (Spearman) sur les données réelles.")
-    parser.add_argument("--env", choices=["dev", "preprod", "prod"], default=None,
+    parser.add_argument("--env", choices=["preprod", "prod"], default=None,
                          help="Écrase APP_ENV (.env) pour cette exécution")
     args = parser.parse_args()
-    run(args.env or os.getenv("APP_ENV", "dev"))
+    run(args.env or os.getenv("APP_ENV", "preprod"))

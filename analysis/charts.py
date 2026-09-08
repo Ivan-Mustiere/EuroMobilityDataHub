@@ -220,7 +220,7 @@ def run(env: str) -> list[pathlib.Path]:
 if __name__ == "__main__":
     load_dotenv()
     parser = argparse.ArgumentParser(description="Génère les 4 graphiques accessibles à partir des données réelles.")
-    parser.add_argument("--env", choices=["dev", "preprod", "prod"], default=None,
+    parser.add_argument("--env", choices=["preprod", "prod"], default=None,
                          help="Écrase APP_ENV (.env) pour cette exécution")
     args = parser.parse_args()
-    run(args.env or os.getenv("APP_ENV", "dev"))
+    run(args.env or os.getenv("APP_ENV", "preprod"))

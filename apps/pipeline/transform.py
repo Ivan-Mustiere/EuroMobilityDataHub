@@ -912,7 +912,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     parser = argparse.ArgumentParser(description="Nettoie et harmonise les 3 CSV SNCF dans la base DuckDB de l'environnement.")
-    parser.add_argument("--env", choices=["dev", "preprod", "prod"], default=None,
+    parser.add_argument("--env", choices=["preprod", "prod"], default=None,
                          help="Écrase APP_ENV (.env) pour cette exécution")
     args = parser.parse_args()
-    run(args.env or os.getenv("APP_ENV", "dev"))
+    run(args.env or os.getenv("APP_ENV", "preprod"))

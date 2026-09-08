@@ -34,7 +34,7 @@ def client(tmp_path, monkeypatch):
     con.close()
 
     monkeypatch.setattr(api_main, "get_connection", lambda: duckdb.connect(str(db_path), read_only=True))
-    monkeypatch.setattr(api_main, "APP_ENV", "dev")
+    monkeypatch.setattr(api_main, "APP_ENV", "preprod")
     monkeypatch.setattr(api_main, "VALID_API_KEYS", {"test-key"})
     api_main.limiter.reset()
     return TestClient(api_main.app, headers={"X-API-Key": "test-key"})
@@ -43,7 +43,7 @@ def client(tmp_path, monkeypatch):
 def test_health(client):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "env": "dev"}
+    assert response.json() == {"status": "ok", "env": "preprod"}
 
 
 def test_list_stations(client):
