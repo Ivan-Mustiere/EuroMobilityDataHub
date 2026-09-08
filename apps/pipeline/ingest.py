@@ -85,83 +85,65 @@ def _resolve_ch_gtfs_zip_url() -> str:
     return zip_resources[0]["url"]
 
 
+def _fetch(filename: str, url: str, timeout: int, headers: dict | None = None, display_url: str | None = None) -> None:
+    print(f"[ingest] téléchargement de {filename} depuis {display_url or url}")
+    response = requests.get(url, headers=headers or {}, timeout=timeout)
+    response.raise_for_status()
+    (RAW_DIR / filename).write_bytes(response.content)
+    print(f"[ingest] {filename} écrit ({len(response.content)} octets)")
+
+
 def download(force: bool = False) -> None:
+    """Isole les échecs par source (Bloc 1) : une API en panne ne doit pas empêcher les autres
+    sources de se télécharger — chaque échec est loggé et collecté ci-dessous plutôt que de
+    stopper immédiatement toute la fonction, mais la tâche Airflow échoue quand même à la fin
+    (alerte SES, cf. pipeline_dag.py) si au moins une source a échoué : rien n'est masqué."""
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    for filename, url in SOURCES.items():
+    errors: list[str] = []
+
+    def _try(filename: str, url: str, timeout: int, headers: dict | None = None, display_url: str | None = None) -> None:
         dest = RAW_DIR / filename
         if dest.exists() and not force:
             print(f"[ingest] {filename} déjà présent, skip (utiliser --force pour retélécharger)")
-            continue
-        print(f"[ingest] téléchargement de {filename} depuis {url}")
-        response = requests.get(url, timeout=60)
-        response.raise_for_status()
-        dest.write_bytes(response.content)
-        print(f"[ingest] {filename} écrit ({len(response.content)} octets)")
+            return
+        try:
+            _fetch(filename, url, timeout, headers, display_url)
+        except Exception as exc:
+            print(f"[ingest] ÉCHEC {filename} : {exc!r}")
+            errors.append(filename)
 
-    dest = RAW_DIR / CH_GTFS_ZIP_FILENAME
-    if dest.exists() and not force:
+    for filename, url in SOURCES.items():
+        _try(filename, url, timeout=60)
+
+    if (RAW_DIR / CH_GTFS_ZIP_FILENAME).exists() and not force:
         print(f"[ingest] {CH_GTFS_ZIP_FILENAME} déjà présent, skip (utiliser --force pour retélécharger)")
     else:
-        url = _resolve_ch_gtfs_zip_url()
-        print(f"[ingest] téléchargement de {CH_GTFS_ZIP_FILENAME} depuis {url}")
-        response = requests.get(url, timeout=120)
-        response.raise_for_status()
-        dest.write_bytes(response.content)
-        print(f"[ingest] {CH_GTFS_ZIP_FILENAME} écrit ({len(response.content)} octets)")
+        try:
+            ch_url = _resolve_ch_gtfs_zip_url()
+        except Exception as exc:
+            print(f"[ingest] ÉCHEC {CH_GTFS_ZIP_FILENAME} (résolution CKAN) : {exc!r}")
+            errors.append(CH_GTFS_ZIP_FILENAME)
+        else:
+            _try(CH_GTFS_ZIP_FILENAME, ch_url, timeout=120)
 
-    dest = RAW_DIR / NL_GTFS_ZIP_FILENAME
-    if dest.exists() and not force:
-        print(f"[ingest] {NL_GTFS_ZIP_FILENAME} déjà présent, skip (utiliser --force pour retélécharger)")
-    else:
-        print(f"[ingest] téléchargement de {NL_GTFS_ZIP_FILENAME} depuis {NL_GTFS_ZIP_URL}")
-        response = requests.get(NL_GTFS_ZIP_URL, timeout=120)
-        response.raise_for_status()
-        dest.write_bytes(response.content)
-        print(f"[ingest] {NL_GTFS_ZIP_FILENAME} écrit ({len(response.content)} octets)")
+    _try(NL_GTFS_ZIP_FILENAME, NL_GTFS_ZIP_URL, timeout=120)
+    _try(FI_STATIONS_FILENAME, FI_STATIONS_URL, timeout=30, headers={"Accept-Encoding": "gzip"})
+    _try(PL_GTFS_ZIP_FILENAME, PL_GTFS_ZIP_URL, timeout=120)
+    _try(DE_GTFS_ZIP_FILENAME, DE_GTFS_ZIP_URL, timeout=240)
 
-    dest = RAW_DIR / FI_STATIONS_FILENAME
-    if dest.exists() and not force:
-        print(f"[ingest] {FI_STATIONS_FILENAME} déjà présent, skip (utiliser --force pour retélécharger)")
-    else:
-        print(f"[ingest] téléchargement de {FI_STATIONS_FILENAME} depuis {FI_STATIONS_URL}")
-        response = requests.get(FI_STATIONS_URL, headers={"Accept-Encoding": "gzip"}, timeout=30)
-        response.raise_for_status()
-        dest.write_bytes(response.content)
-        print(f"[ingest] {FI_STATIONS_FILENAME} écrit ({len(response.content)} octets)")
-
-    dest = RAW_DIR / PL_GTFS_ZIP_FILENAME
-    if dest.exists() and not force:
-        print(f"[ingest] {PL_GTFS_ZIP_FILENAME} déjà présent, skip (utiliser --force pour retélécharger)")
-    else:
-        print(f"[ingest] téléchargement de {PL_GTFS_ZIP_FILENAME} depuis {PL_GTFS_ZIP_URL}")
-        response = requests.get(PL_GTFS_ZIP_URL, timeout=120)
-        response.raise_for_status()
-        dest.write_bytes(response.content)
-        print(f"[ingest] {PL_GTFS_ZIP_FILENAME} écrit ({len(response.content)} octets)")
-
-    dest = RAW_DIR / DE_GTFS_ZIP_FILENAME
-    if dest.exists() and not force:
-        print(f"[ingest] {DE_GTFS_ZIP_FILENAME} déjà présent, skip (utiliser --force pour retélécharger)")
-    else:
-        print(f"[ingest] téléchargement de {DE_GTFS_ZIP_FILENAME} depuis {DE_GTFS_ZIP_URL}")
-        response = requests.get(DE_GTFS_ZIP_URL, timeout=240)
-        response.raise_for_status()
-        dest.write_bytes(response.content)
-        print(f"[ingest] {DE_GTFS_ZIP_FILENAME} écrit ({len(response.content)} octets)")
-
-    dest = RAW_DIR / SE_GTFS_ZIP_FILENAME
-    if dest.exists() and not force:
-        print(f"[ingest] {SE_GTFS_ZIP_FILENAME} déjà présent, skip (utiliser --force pour retélécharger)")
-        return
     se_key = os.environ.get("SE_GTFS_STATIC_KEY")
     if not se_key:
-        print(f"[ingest] SE_GTFS_STATIC_KEY absent, référentiel suédois ignoré (voir infra/cloud/local-test/se_static.env)")
-        return
-    print(f"[ingest] téléchargement de {SE_GTFS_ZIP_FILENAME} depuis {SE_GTFS_ZIP_URL_TEMPLATE.format(key='***')}")
-    response = requests.get(SE_GTFS_ZIP_URL_TEMPLATE.format(key=se_key), timeout=240)
-    response.raise_for_status()
-    dest.write_bytes(response.content)
-    print(f"[ingest] {SE_GTFS_ZIP_FILENAME} écrit ({len(response.content)} octets)")
+        print("[ingest] SE_GTFS_STATIC_KEY absent, référentiel suédois ignoré (voir infra/cloud/local-test/se_static.env)")
+    else:
+        _try(
+            SE_GTFS_ZIP_FILENAME,
+            SE_GTFS_ZIP_URL_TEMPLATE.format(key=se_key),
+            timeout=240,
+            display_url=SE_GTFS_ZIP_URL_TEMPLATE.format(key="***"),
+        )
+
+    if errors:
+        raise RuntimeError(f"{len(errors)} source(s) en échec (voir logs ci-dessus) : {', '.join(errors)}")
 
 
 if __name__ == "__main__":
