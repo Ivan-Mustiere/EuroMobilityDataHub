@@ -28,6 +28,9 @@ def client(tmp_path, monkeypatch):
         intercites_csv=FIXTURES / "regularite_intercites_sample.csv",
     )
     transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_sample.csv")
+    # apps/api/main.py interroge dim_stations_multipays (Gold, 8 pays), pas dim_stations : même
+    # id_gare = pays || ':' || station_id que dbt/models/marts/dim_stations_multipays.sql.
+    con.execute("CREATE TABLE dim_stations_multipays AS SELECT pays || ':' || station_id AS id_gare, * FROM dim_stations")
     con.close()
 
     monkeypatch.setattr(api_main, "get_connection", lambda: duckdb.connect(str(db_path), read_only=True))
@@ -64,7 +67,7 @@ def test_get_station_not_found(client):
 
 
 def test_get_station_found(client):
-    response = client.get("/stations/uuid-paris-montparnasse")
+    response = client.get("/stations/FR:uuid-paris-montparnasse")
     assert response.status_code == 200
     assert response.json()["trigramme"] == "PMP"
 
@@ -254,6 +257,6 @@ def test_metrics_endpoint_exposes_prometheus_format(client):
     assert 'api_requests_total{method="GET",path="/health",status="200"}' in body
     assert 'api_requests_total{method="GET",path="/stations",status="200"}' in body
     # le gabarit de route ("{station_id}"), pas l'ID brut "does-not-exist" -> pas d'explosion de cardinalité
-    assert 'path="/stations/{station_id}",status="404"' in body
+    assert 'path="/stations/{id_gare}",status="404"' in body
     assert "does-not-exist" not in body
     assert "api_request_duration_seconds" in body

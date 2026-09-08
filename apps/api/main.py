@@ -22,7 +22,7 @@ import requests
 import snowflake.connector
 from cryptography.hazmat.primitives import serialization
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
@@ -66,7 +66,7 @@ _DISRUPTIONS_CACHE_TTL_S = 90
 CH_GTFS_SA_TOKEN = os.getenv("CH_GTFS_SA_TOKEN", "")
 _ch_alerts_cache = {"fetched_at": 0.0, "by_trip_id": {}}
 
-STATION_COLUMNS = ["station_id", "nom_gare", "trigramme", "code_uic", "latitude", "longitude"]
+STATION_COLUMNS = ["id_gare", "station_id", "nom_gare", "trigramme", "code_uic", "latitude", "longitude", "pays"]
 REGULARITE_COLUMNS = [
     "mois", "type_ligne", "axe_label", "nb_trains_prevus", "nb_trains_circules",
     "nb_trains_annules", "nb_trains_retard_arrivee", "retard_moyen_tous_trains_arrivee_min",
@@ -723,7 +723,11 @@ def health():
     "/stations",
     tags=["gares"],
     summary="Lister les gares du référentiel",
-    response_description="Liste des gares correspondant au filtre, avec coordonnées GPS",
+    response_description=(
+        "Liste des gares correspondant au filtre (8 pays : FR/CH/NL/IT/FI/PL/DE/SE), avec "
+        "coordonnées GPS. `id_gare` (`pays:station_id`) est l'identifiant à utiliser pour "
+        "GET /stations/{id_gare} — `station_id` seul n'est PAS unique entre pays."
+    ),
     dependencies=[Depends(require_api_key)],
 )
 @limiter.limit("30/minute")
@@ -736,13 +740,13 @@ def list_stations(
     try:
         if q:
             rows = con.execute(
-                f"SELECT {', '.join(STATION_COLUMNS)} FROM dim_stations "
+                f"SELECT {', '.join(STATION_COLUMNS)} FROM dim_stations_multipays "
                 "WHERE nom_gare_norm LIKE ? ORDER BY nom_gare LIMIT ?",
                 [f"%{q.upper()}%", limit],
             ).fetchall()
         else:
             rows = con.execute(
-                f"SELECT {', '.join(STATION_COLUMNS)} FROM dim_stations ORDER BY nom_gare LIMIT ?",
+                f"SELECT {', '.join(STATION_COLUMNS)} FROM dim_stations_multipays ORDER BY nom_gare LIMIT ?",
                 [limit],
             ).fetchall()
     finally:
@@ -751,19 +755,22 @@ def list_stations(
 
 
 @app.get(
-    "/stations/{station_id}",
+    "/stations/{id_gare}",
     tags=["gares"],
     summary="Récupérer une gare par son identifiant",
-    response_description="Détail de la gare (nom, trigramme, code UIC, coordonnées GPS)",
+    response_description="Détail de la gare (nom, trigramme, code UIC, coordonnées GPS, pays)",
     dependencies=[Depends(require_api_key)],
 )
 @limiter.limit("30/minute")
-def get_station(request: Request, station_id: str):
+def get_station(
+    request: Request,
+    id_gare: str = Path(..., description='Identifiant complet "pays:station_id", ex. "SE:9022050025317002" (cf. champ id_gare de GET /stations)'),
+):
     con = get_connection()
     try:
         row = con.execute(
-            f"SELECT {', '.join(STATION_COLUMNS)} FROM dim_stations WHERE station_id = ?",
-            [station_id],
+            f"SELECT {', '.join(STATION_COLUMNS)} FROM dim_stations_multipays WHERE id_gare = ?",
+            [id_gare],
         ).fetchone()
     finally:
         con.close()
