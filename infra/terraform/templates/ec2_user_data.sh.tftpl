@@ -76,6 +76,18 @@ aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_
   --query SecretString --output text | jq -r 'to_entries[] | "\(.key)=\(.value)"' \
   > /opt/euromobilitydatahub/secrets/api.env
 
+# Flux GTFS-RT internationaux (CH/DE/NL/IT/FI/PL/SE, cf. secrets.tf) : un secret par pays, jamais
+# fetché avant (l'EC2 réel ne faisait tourner que producer/consumer FR) — un fichier par pays sous
+# secrets/, consommé via CH_ENV_FILE/DE_ENV_FILE/... ci-dessous (infra/cloud/docker-compose.yml).
+for country in ch de nl it fi pl se; do
+  aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/gtfs-$country" \
+    --query SecretString --output text | jq -r 'to_entries[] | "\(.key)=\(.value)"' \
+    > "/opt/euromobilitydatahub/secrets/$country.env"
+done
+aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/gtfs-se-static" \
+  --query SecretString --output text | jq -r 'to_entries[] | "\(.key)=\(.value)"' \
+  > /opt/euromobilitydatahub/secrets/se_static.env
+
 chmod 600 /opt/euromobilitydatahub/secrets/*.env
 
 # --- Initialisation du schéma Postgres (idempotent, cf. infra/cloud/init.sql) ---
@@ -97,4 +109,12 @@ cd /opt/euromobilitydatahub/infra/cloud
 export RDS_ENV_FILE=/opt/euromobilitydatahub/secrets/rds.env
 export SNOWFLAKE_ENV_FILE=/opt/euromobilitydatahub/secrets/snowflake.env
 export API_ENV_FILE=/opt/euromobilitydatahub/secrets/api.env
+export CH_ENV_FILE=/opt/euromobilitydatahub/secrets/ch.env
+export DE_ENV_FILE=/opt/euromobilitydatahub/secrets/de.env
+export NL_ENV_FILE=/opt/euromobilitydatahub/secrets/nl.env
+export IT_ENV_FILE=/opt/euromobilitydatahub/secrets/it.env
+export FI_ENV_FILE=/opt/euromobilitydatahub/secrets/fi.env
+export PL_ENV_FILE=/opt/euromobilitydatahub/secrets/pl.env
+export SE_ENV_FILE=/opt/euromobilitydatahub/secrets/se.env
+export SE_STATIC_ENV_FILE=/opt/euromobilitydatahub/secrets/se_static.env
 docker compose up -d --build

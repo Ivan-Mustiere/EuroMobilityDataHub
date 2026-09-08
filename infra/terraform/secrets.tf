@@ -37,9 +37,80 @@ resource "aws_secretsmanager_secret" "api_key" {
   description = "Cle(s) API acceptees par l'API cloud (en-tete X-API-Key, cf. apps/api/main.py)"
 }
 
+# CARTO_API_KEY/SNCF_API_KEY/CH_GTFS_SA_TOKEN : tokens tiers optionnels (tuiles de fond de carte,
+# cause de retard FR/CH), committés en clair dans infra/cloud/local-test/api.env (même convention
+# que les tokens GTFS-RT ci-dessous) — API_KEYS reste généré par Terraform (random_password),
+# pas repris du fichier local (qui n'a que "dev-local-key").
+data "external" "api_extra_keys_env" {
+  program = ["python3", "${path.module}/scripts/parse_env_file.py"]
+  query = {
+    path = "${path.module}/../../infra/cloud/local-test/api.env"
+  }
+}
+
 resource "aws_secretsmanager_secret_version" "api_key" {
   secret_id = aws_secretsmanager_secret.api_key.id
-  secret_string = jsonencode({
-    API_KEYS = random_password.api_key.result
-  })
+  secret_string = jsonencode(merge(
+    { for k, v in data.external.api_extra_keys_env.result : k => v if k != "API_KEYS" },
+    { API_KEYS = random_password.api_key.result }
+  ))
+}
+
+# --- Flux GTFS-RT internationaux (CH/DE/NL/IT/FI/PL/SE, cf. apps/streaming/producer.py) ---
+# Jusqu'ici ces tokens n'existaient QUE dans infra/cloud/local-test/*.env (committés, cf.
+# convention documentée dans ces fichiers), jamais exposés à l'EC2 réel : le bundle applicatif
+# exclut délibérément local-test/ (cf. ec2.tf, null_resource.stage_cloud_bundle), pour ne pas
+# faire transiter de secrets en clair dans le zip S3. Ces fichiers restent la seule source de
+# vérité (data.external, scripts/parse_env_file.py) : pas de duplication des tokens dans ce HCL.
+locals {
+  gtfs_country_env_files = {
+    ch = "ch.env"
+    de = "de.env"
+    nl = "nl.env"
+    it = "it.env"
+    fi = "fi.env"
+    pl = "pl.env"
+    se = "se.env"
+  }
+}
+
+data "external" "gtfs_country_env" {
+  for_each = local.gtfs_country_env_files
+  program  = ["python3", "${path.module}/scripts/parse_env_file.py"]
+  query = {
+    path = "${path.module}/../../infra/cloud/local-test/${each.value}"
+  }
+}
+
+resource "aws_secretsmanager_secret" "gtfs_country" {
+  for_each    = local.gtfs_country_env_files
+  name        = "${local.name_prefix}/gtfs-${each.key}"
+  description = "Credentials/config du flux GTFS-RT ${upper(each.key)} (producer_${each.key}, cf. apps/streaming/producer.py)"
+}
+
+resource "aws_secretsmanager_secret_version" "gtfs_country" {
+  for_each      = local.gtfs_country_env_files
+  secret_id     = aws_secretsmanager_secret.gtfs_country[each.key].id
+  secret_string = jsonencode(data.external.gtfs_country_env[each.key].result)
+}
+
+# Clé Trafiklab "GTFS Sweden 3 Static data" (apps/pipeline/ingest.py) : produit API distinct de la
+# clé "Realtime" ci-dessus (gtfs-se), consommée par le conteneur airflow (pipeline batch), pas par
+# producer_se — secret séparé plutôt qu'un champ de plus dans gtfs-se pour rester 1:1 avec
+# infra/cloud/local-test/se_static.env et son usage (cf. docker-compose.yml, service airflow).
+data "external" "gtfs_se_static_env" {
+  program = ["python3", "${path.module}/scripts/parse_env_file.py"]
+  query = {
+    path = "${path.module}/../../infra/cloud/local-test/se_static.env"
+  }
+}
+
+resource "aws_secretsmanager_secret" "gtfs_se_static" {
+  name        = "${local.name_prefix}/gtfs-se-static"
+  description = "Cle Trafiklab GTFS Sweden 3 Static data (apps/pipeline/ingest.py, build_se_reference)"
+}
+
+resource "aws_secretsmanager_secret_version" "gtfs_se_static" {
+  secret_id     = aws_secretsmanager_secret.gtfs_se_static.id
+  secret_string = jsonencode(data.external.gtfs_se_static_env.result)
 }
