@@ -18,9 +18,13 @@ CREATE TABLE IF NOT EXISTS dim_stations (
 -- (arrival_delay/departure_delay) — cf. apps/streaming/producer.py. Sert à l'endpoint
 -- /realtime/trains (apps/api/main.py) pour interpoler une position entre deux gares, la SNCF ne
 -- publiant pas de position GPS par train (pas de flux GTFS-RT vehicle-positions).
+-- `pays` : code pays de l'opérateur source ('FR' SNCF, 'CH' opentransportdata.swiss...) — permet
+-- à /realtime/trains de choisir la bonne source de cause de retard par trajet (cf. plan Suisse,
+-- apps/api/main.py) sans avoir à le déduire du format de trip_id.
 CREATE TABLE IF NOT EXISTS fact_realtime (
     trip_id        TEXT PRIMARY KEY,
     route_id       TEXT,
+    pays           TEXT NOT NULL DEFAULT 'FR',
     stops          JSONB NOT NULL,
     feed_timestamp BIGINT,
     captured_at    TIMESTAMPTZ NOT NULL,

@@ -15,3 +15,5 @@ sources:
         identifier: REGULARITE_INTERCITES
       - name: gares
         identifier: GARES
+      - name: dim_stations_multipays
+        identifier: DIM_STATIONS_MULTIPAYS

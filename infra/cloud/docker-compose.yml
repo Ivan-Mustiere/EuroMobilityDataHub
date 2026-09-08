@@ -28,6 +28,20 @@ services:
         until /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list; do sleep 2; done
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
           --topic gtfs-rt-trip-updates --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic gtfs-rt-trip-updates-ch --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic gtfs-rt-trip-updates-nl --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic gtfs-rt-trip-updates-it --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic gtfs-rt-trip-updates-fi --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic gtfs-rt-trip-updates-pl --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic gtfs-rt-trip-updates-de --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists \
+          --topic gtfs-rt-trip-updates-se --partitions 1 --replication-factor 1
 
   producer:
     build: ../../apps/streaming
@@ -50,6 +64,200 @@ services:
       TOPIC: gtfs-rt-trip-updates
     # ${RDS_ENV_FILE} : positionné par le bootstrap EC2 vers le secret réel (cf. ec2.tf) ; par
     # défaut, pointe vers les valeurs factices du profil local-test.
+    env_file:
+      - ${RDS_ENV_FILE:-./local-test/rds.env}
+
+  # Suisse (opentransportdata.swiss) : même image que producer/consumer, généralisée par variables
+  # d'env (cf. apps/streaming/producer.py) plutôt que dupliquée. Écrit dans la même table
+  # fact_realtime (colonne `pays`), consommée par la même API — cf. plan Suisse.
+  producer_ch:
+    build: ../../apps/streaming
+    command: ["python", "producer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    env_file:
+      - ${CH_ENV_FILE:-./local-test/ch.env}
+    volumes:
+      # ch_rail_routes.txt (route_id ferroviaires suisses) généré par apps/pipeline/transform.py,
+      # build_ch_reference — cf. RAIL_ROUTES_FILE dans ch.env.
+      - ../../data/raw:/app/data/raw:ro
+
+  consumer_ch:
+    build: ../../apps/streaming
+    command: ["python", "consumer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC: gtfs-rt-trip-updates-ch
+    env_file:
+      - ${RDS_ENV_FILE:-./local-test/rds.env}
+
+  # Pays-Bas (OVapi/ND-OV) : flux public sans authentification, déjà dédié aux trains (pas de
+  # RAIL_ROUTES_FILE nécessaire, contrairement à la Suisse) et publiant déjà une heure absolue par
+  # arrêt (pas la seule limite suisse) — cf. plan Suisse, section Pays-Bas.
+  producer_nl:
+    build: ../../apps/streaming
+    command: ["python", "producer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    env_file:
+      - ${NL_ENV_FILE:-./local-test/nl.env}
+
+  consumer_nl:
+    build: ../../apps/streaming
+    command: ["python", "consumer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC: gtfs-rt-trip-updates-nl
+    env_file:
+      - ${RDS_ENV_FILE:-./local-test/rds.env}
+
+  # Italie (Trenitalia France) : même proxy public que la SNCF (transport.data.gouv.fr), sans
+  # authentification — ne couvre que les trains transfrontaliers Paris/Lyon-Milan (~38 trains),
+  # pas le réseau italien domestique (aucun flux GTFS-RT national italien ouvert trouvé).
+  producer_it:
+    build: ../../apps/streaming
+    command: ["python", "producer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    env_file:
+      - ${IT_ENV_FILE:-./local-test/it.env}
+
+  consumer_it:
+    build: ../../apps/streaming
+    command: ["python", "consumer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC: gtfs-rt-trip-updates-it
+    env_file:
+      - ${RDS_ENV_FILE:-./local-test/rds.env}
+
+  # Finlande (Digitraffic/VR) : API JSON propriétaire (pas GTFS-RT, cf. apps/streaming/
+  # producer_fi.py), publique sans authentification. Position/retard seulement pour l'instant
+  # (pas de cause : les codes de cause demandent une table de correspondance à part).
+  producer_fi:
+    build: ../../apps/streaming
+    command: ["python", "producer_fi.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    env_file:
+      - ${FI_ENV_FILE:-./local-test/fi.env}
+
+  consumer_fi:
+    build: ../../apps/streaming
+    command: ["python", "consumer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC: gtfs-rt-trip-updates-fi
+    env_file:
+      - ${RDS_ENV_FILE:-./local-test/rds.env}
+
+  # Pologne (republication communautaire mkuran.pl des données officielles PKP/PLK) : flux public
+  # sans authentification, mais qui ne référence les arrêts que par stop_sequence — résolu via
+  # STOP_SEQUENCE_MAP_FILE (pl_stop_sequence_map.csv, généré par apps/pipeline/transform.py,
+  # build_pl_reference), d'où le montage du volume data/raw.
+  producer_pl:
+    build: ../../apps/streaming
+    command: ["python", "producer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    env_file:
+      - ${PL_ENV_FILE:-./local-test/pl.env}
+    volumes:
+      - ../../data/raw:/app/data/raw:ro
+
+  consumer_pl:
+    build: ../../apps/streaming
+    command: ["python", "consumer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC: gtfs-rt-trip-updates-pl
+    env_file:
+      - ${RDS_ENV_FILE:-./local-test/rds.env}
+
+  # Allemagne (DELFI, agrégat national gtfs.de) : flux public sans authentification, mais mélange
+  # tous les modes de transport et ne publie jamais de route_id — filtré via RAIL_TRIPS_FILE
+  # (de_rail_trips.txt, généré par apps/pipeline/transform.py, build_de_reference).
+  producer_de:
+    build: ../../apps/streaming
+    command: ["python", "producer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    env_file:
+      - ${DE_ENV_FILE:-./local-test/de.env}
+    volumes:
+      - ../../data/raw:/app/data/raw:ro
+
+  consumer_de:
+    build: ../../apps/streaming
+    command: ["python", "consumer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC: gtfs-rt-trip-updates-de
+    env_file:
+      - ${RDS_ENV_FILE:-./local-test/rds.env}
+
+  # Suède (Trafiklab/Samtrafiken, opérateur Skånetrafiken — cf. se.env) : flux mélangeant tous les
+  # modes et ne publiant quasiment jamais de route_id, filtré via RAIL_TRIPS_FILE
+  # (se_rail_trips.txt, généré par apps/pipeline/transform.py, build_se_reference) — même principe
+  # que l'Allemagne, d'où le montage du volume data/raw.
+  producer_se:
+    build: ../../apps/streaming
+    command: ["python", "producer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    env_file:
+      - ${SE_ENV_FILE:-./local-test/se.env}
+    volumes:
+      - ../../data/raw:/app/data/raw:ro
+
+  consumer_se:
+    build: ../../apps/streaming
+    command: ["python", "consumer.py"]
+    restart: unless-stopped
+    depends_on:
+      - kafka-init-topic
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      TOPIC: gtfs-rt-trip-updates-se
     env_file:
       - ${RDS_ENV_FILE:-./local-test/rds.env}
 
@@ -109,8 +317,11 @@ services:
       ALERT_EMAIL: ${ALERT_EMAIL:-}
       AWS_REGION: ${AWS_REGION:-eu-west-3}
     # ${SNOWFLAKE_ENV_FILE} : idem RDS_ENV_FILE, positionné par le bootstrap EC2 en production.
+    # ${SE_STATIC_ENV_FILE} : SE_GTFS_STATIC_KEY, lu par apps/pipeline/ingest.py (référentiel
+    # suédois, cf. se_static.env) — exécuté ici via le DAG (pipeline_dag.py, tâche `ingest`).
     env_file:
       - ${SNOWFLAKE_ENV_FILE:-./local-test/snowflake.env}
+      - ${SE_STATIC_ENV_FILE:-./local-test/se_static.env}
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       # Miroir exact de la disposition du dépôt sous /opt/app (apps/pipeline/, data/, config/...

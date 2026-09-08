@@ -1,4 +1,5 @@
 import pathlib
+import time
 
 import duckdb
 import pytest
@@ -134,17 +135,46 @@ def test_access_log_never_contains_raw_client_ip(client, caplog):
 
 
 @pytest.mark.parametrize(
-    "stop_id, expected",
+    "stop_id, pays, expected",
     [
-        ("StopPoint:OCETGV INOUI-87688887", "87688887"),
-        ("StopArea:OCE83045013", "83045013"),
-        ("StopPoint:OCESN-8748100", "8748100"),
-        ("", None),
-        (None, None),
+        ("StopPoint:OCETGV INOUI-87688887", "FR", "FR:87688887"),
+        ("StopArea:OCE83045013", "FR", "FR:83045013"),
+        ("StopPoint:OCESN-8748100", "FR", "FR:8748100"),
+        ("", "FR", None),
+        (None, "FR", None),
     ],
 )
-def test_uic_from_stop_id(stop_id, expected):
-    assert api_main._uic_from_stop_id(stop_id) == expected
+def test_uic_from_stop_id(stop_id, pays, expected):
+    assert api_main._uic_from_stop_id(stop_id, pays) == expected
+
+
+def test_uic_from_stop_id_ch_sloid_fallback(monkeypatch):
+    # Le flux GTFS-RT suisse encode presque jamais le code UIC dans le stop_id lui-même (format
+    # "sloid") : la regex française échoue, on doit retomber sur dim_stop_uic_ch (cf. plan Suisse).
+    monkeypatch.setitem(api_main._ch_stop_uic_cache, "map", {"ch:1:sloid:6302:1:1": "8506302"})
+    monkeypatch.setitem(api_main._ch_stop_uic_cache, "fetched_at", time.time())
+    assert api_main._uic_from_stop_id("ch:1:sloid:6302:1:1", "CH") == "CH:8506302"
+    assert api_main._uic_from_stop_id("ch:1:sloid:inconnu", "CH") is None
+
+
+def test_uic_from_stop_id_no_cross_country_collision(monkeypatch):
+    # Régression : l'Italie/la Finlande/la Pologne/l'Allemagne/la Suède résolvent leur stop_id par
+    # identité (pas de code UIC) et leurs plages numériques se chevauchent (ex. stop_id "1" existe
+    # à la fois en Finlande et en Allemagne) — sans le préfixe pays, un référentiel bâti après un
+    # autre écraserait silencieusement le bon résultat (bug constaté : trains finlandais affichés
+    # avec des gares allemandes, l'Allemagne étant chargée en dernier dans dim_stations).
+    monkeypatch.setattr(api_main, "_fi_stop_uic_map", lambda: {"1": "1"})
+    monkeypatch.setattr(api_main, "_de_stop_uic_map", lambda: {"1": "1"})
+    assert api_main._uic_from_stop_id("1", "FI") == "FI:1"
+    assert api_main._uic_from_stop_id("1", "DE") == "DE:1"
+
+
+def test_uic_from_stop_id_se(monkeypatch):
+    # Suède : résolution par identité comme l'Italie/la Finlande/la Pologne/l'Allemagne (stop_id au
+    # format NeTEx suédois, trop long pour la regex UIC — cf. build_se_reference).
+    monkeypatch.setattr(api_main, "_se_stop_uic_map", lambda: {"9022050025317002": "9022050025317002"})
+    assert api_main._uic_from_stop_id("9022050025317002", "SE") == "SE:9022050025317002"
+    assert api_main._uic_from_stop_id("inconnu", "SE") is None
 
 
 def _stop(stop_id, arrival_time=None, arrival_delay=None, departure_time=None, departure_delay=None):

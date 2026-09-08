@@ -31,20 +31,27 @@ from dotenv import load_dotenv
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 RAW_DIR = ROOT / "data" / "raw"
 
-# Partitionnement "opérateur / type de donnée / date" (Bloc 1, partie 3.4/a).
+# Partitionnement "opérateur / type de donnée / date" (Bloc 1, partie 3.4/a). (opérateur,
+# catégorie) plutôt qu'une catégorie seule : dim_stations_multipays.csv (apps/pipeline/
+# transform.py, export_dim_stations_multipays) n'est pas une donnée SNCF, contrairement à tout le
+# reste ici — préfixe S3 "gtfs-international" dédié, pas de mélange dans "sncf/".
 CATEGORIES = {
-    "regularite_tgv.csv": "regularite",
-    "regularite_ter.csv": "regularite",
-    "regularite_intercites.csv": "regularite",
-    "gares.csv": "referentiel",
-    "tarifs_tgv_ouigo.csv": "tarifs",
-    "tarifs_intercites.csv": "tarifs",
+    "regularite_tgv.csv": ("sncf", "regularite"),
+    "regularite_ter.csv": ("sncf", "regularite"),
+    "regularite_intercites.csv": ("sncf", "regularite"),
+    "gares.csv": ("sncf", "referentiel"),
+    "tarifs_tgv_ouigo.csv": ("sncf", "tarifs"),
+    "tarifs_intercites.csv": ("sncf", "tarifs"),
+    "dim_stations_multipays.csv": ("gtfs-international", "referentiel"),
 }
 
 
 def s3_keys_for_today() -> dict[str, str]:
     dt = datetime.date.today().isoformat()
-    return {filename: f"sncf/{category}/dt={dt}/{filename}" for filename, category in CATEGORIES.items()}
+    return {
+        filename: f"{operateur}/{category}/dt={dt}/{filename}"
+        for filename, (operateur, category) in CATEGORIES.items()
+    }
 
 
 def upload_to_bronze(bucket: str) -> dict[str, str]:

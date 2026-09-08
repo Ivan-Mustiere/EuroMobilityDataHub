@@ -12,6 +12,11 @@ from psycopg.types.json import Jsonb
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "kafka:9092")
 TOPIC = os.getenv("TOPIC", "gtfs-rt-trip-updates")
+# Un group_id distinct par topic (donc par pays) : des membres d'un même groupe Kafka doivent
+# avoir la même souscription, sinon le rééquilibrage des partitions devient imprévisible — bug
+# constaté en ajoutant consumer_it (partageait "fact-realtime-writer" avec FR/CH/NL, ne recevait
+# jamais de partition assignée). Par défaut dérivé du topic pour rester rétrocompatible sur FR.
+GROUP_ID = os.getenv("GROUP_ID", f"fact-realtime-writer-{TOPIC}")
 
 # Nom du secret Secrets Manager (pas une valeur secrète en soi, cf. infra/terraform/rds.tf) :
 # quand il est présent, les identifiants sont relus à chaque (re)connexion plutôt que figés au
@@ -22,10 +27,11 @@ RDS_SECRET_NAME = os.getenv("RDS_SECRET_NAME")
 AWS_REGION = os.getenv("AWS_REGION")
 
 UPSERT_SQL = """
-INSERT INTO fact_realtime (trip_id, route_id, stops, feed_timestamp, captured_at, updated_at)
-VALUES (%(trip_id)s, %(route_id)s, %(stops)s, %(feed_timestamp)s, to_timestamp(%(captured_at)s), now())
+INSERT INTO fact_realtime (trip_id, route_id, pays, stops, feed_timestamp, captured_at, updated_at)
+VALUES (%(trip_id)s, %(route_id)s, %(pays)s, %(stops)s, %(feed_timestamp)s, to_timestamp(%(captured_at)s), now())
 ON CONFLICT (trip_id) DO UPDATE SET
     route_id       = EXCLUDED.route_id,
+    pays           = EXCLUDED.pays,
     stops          = EXCLUDED.stops,
     feed_timestamp = EXCLUDED.feed_timestamp,
     captured_at    = EXCLUDED.captured_at,
@@ -88,7 +94,7 @@ def main() -> None:
             bootstrap_servers=KAFKA_BOOTSTRAP,
             value_deserializer=lambda v: json.loads(v.decode("utf-8")),
             auto_offset_reset="earliest",
-            group_id="fact-realtime-writer",
+            group_id=GROUP_ID,
         ),
         "Kafka",
     )
@@ -98,6 +104,7 @@ def main() -> None:
     try:
         for message in consumer:
             row = dict(message.value)
+            row.setdefault("pays", "FR")  # anciens messages Kafka publiés avant l'ajout du champ
             row["stops"] = Jsonb(row["stops"])
             while True:
                 try:

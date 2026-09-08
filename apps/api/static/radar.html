@@ -366,6 +366,10 @@
   var markerByTrip = {};
   var trainByTrip = {};
   var selectedTripId = null;
+  var allTrains = []; // dernier lot complet reçu (toute l'Europe couverte) ; on n'en dessine
+                       // qu'une portion à la fois — cf. renderVisible.
+  var MAX_MARKERS = 500; // au-delà, la carte devient perceptiblement saccadée (des milliers de
+                          // trains actifs entre les 8 pays couverts)
 
   function bearingDeg(lat1, lon1, lat2, lon2){
     var toRad = Math.PI/180, toDeg = 180/Math.PI;
@@ -385,16 +389,27 @@
   }
 
   // Itinéraire du train sélectionné uniquement (pas de tous les trains à la fois : trop chargé
-  // visuellement) — pointillé + flèches de direction à chaque étape restante du trajet.
+  // visuellement) — trajet parcouru en gris (déjà effectué), trajet à venir en pointillé orange
+  // avec flèches de direction à chaque étape restante.
   function updateSelectedRoute(){
     selectedRouteLayer.clearLayers();
     var t = selectedTripId && trainByTrip[selectedTripId];
-    var pts = t && t.itineraire_restant;
+    if (!t) return;
+
+    var parcouru = t.itineraire_parcouru;
+    if (parcouru && parcouru.length > 1){
+      L.polyline(parcouru, { color:"#5B6B8C", weight:2, opacity:0.6 }).addTo(selectedRouteLayer);
+    }
+
+    var pts = t.itineraire_restant;
     if (!pts || pts.length < 2) return;
 
     L.polyline(pts, { color:"#FF6A3D", weight:2.5, opacity:0.8, dashArray:"6,6" }).addTo(selectedRouteLayer);
 
-    for (var i = 0; i < pts.length - 1; i++){
+    // Au plus ~8 flèches, quel que soit le nombre de points : un tracé réel (Pays-Bas) a des
+    // centaines de points, contre une poignée pour un simple segment gare à gare (autres pays).
+    var step = Math.max(1, Math.floor((pts.length - 1) / 8));
+    for (var i = 0; i < pts.length - 1; i += step){
       var a = pts[i], b = pts[i+1];
       var mid = [(a[0]+b[0])/2, (a[1]+b[1])/2];
       var brg = bearingDeg(a[0], a[1], b[0], b[1]);
@@ -416,7 +431,8 @@
     return "+" + m + " min";
   }
 
-  function routeLabel(routeId, tripId){
+  function routeLabel(ligne, routeId, tripId){
+    if (ligne) return ligne;
     if (routeId) return routeId;
     var m = /:(OUI|OGO|TER|IC|CTE):/.exec(tripId || "");
     var names = {OUI:"TGV INOUI", OGO:"OUIGO", TER:"TER", IC:"Intercités", CTE:"Intercités"};
@@ -451,7 +467,7 @@
     var pct = Math.round(t.progression * 100);
     return (
       '<span class="badge ' + st + '">' + STATUS_LABEL[st] + '</span>' +
-      '<div class="insp-route">' + routeLabel(t.route_id, t.trip_id) + '</div>' +
+      '<div class="insp-route">' + routeLabel(t.ligne, t.route_id, t.trip_id) + '</div>' +
       '<div class="insp-trip">' + t.trip_id + '</div>' +
       '<div class="insp-journey">' +
         '<div class="insp-stop"><span>' + t.gare_precedente + '</span></div>' +
@@ -461,6 +477,7 @@
       '<div class="insp-progress-label">' + pct + '% du trajet parcouru</div>' +
       '<div class="insp-stat"><span>Retard estimé</span><b>' + fmtDelay(t.retard_s) + '</b></div>' +
       '<div class="insp-stat"><span>Statut</span><b>' + (t.statut === "en_route" ? "en circulation" : "à quai") + '</b></div>' +
+      (t.operateur ? '<div class="insp-stat"><span>Opérateur</span><b>' + escapeHtml(t.operateur) + '</b></div>' : '') +
       (t.cause_retard ? '<div class="insp-cause"><span>Cause</span><b>' + escapeHtml(t.cause_retard) + '</b></div>' : '') +
       '<div class="insp-stat"><span>Dernière donnée reçue</span><b>' + new Date(t.maj).toLocaleTimeString("fr-FR") + '</b></div>'
     );
@@ -470,6 +487,23 @@
     selectedTripId = tripId;
     document.getElementById("inspector").classList.add("open");
     refreshInspector();
+    fetchTrainDetail(tripId);
+  }
+
+  // Au clic, l'itinéraire détaillé (parcouru/restant) n'est pas encore dans trainByTrip (le
+  // dernier rafraîchissement périodique ne l'a demandé pour aucun train) : on le récupère tout de
+  // suite au lieu d'attendre jusqu'à 15s le prochain tick() — cf. detail_trip_id, apps/api/main.py.
+  function fetchTrainDetail(tripId){
+    fetch("/realtime/trains?max_age_s=600&detail_trip_id=" + encodeURIComponent(tripId), { headers: { "X-API-Key": API_KEY } })
+      .then(function(res){ return res.ok ? res.json() : null; })
+      .then(function(trains){
+        if (!trains || tripId !== selectedTripId) return; // sélection changée entre-temps
+        var t = trains.filter(function(x){ return x.trip_id === tripId; })[0];
+        if (!t) return;
+        trainByTrip[tripId] = t;
+        refreshInspector();
+      })
+      .catch(function(){ /* le prochain rafraîchissement périodique réessaiera */ });
   }
   function closeInspector(){
     selectedTripId = null;
@@ -489,16 +523,25 @@
   }
   document.getElementById("inspectorClose").addEventListener("click", closeInspector);
 
-  function render(trains){
+  // Ne dessine que les trains dans la vue actuelle de la carte (au plus MAX_MARKERS), pas les
+  // ~3000 trains actifs sur toute l'Europe à la fois : rappelée sur chaque rafraîchissement (15s)
+  // ET à chaque déplacement/zoom, pour ne jamais avoir de marqueurs à côté (ou en dehors) de la
+  // vue — sans quoi un pays éloigné (ex. Finlande) paraît vide tant qu'on ne re-fetch pas.
+  function renderVisible(){
     markersLayer.clearLayers();
     markerByTrip = {};
-    trainByTrip = {};
+
+    var bounds = map.getBounds();
+    var visible = allTrains.filter(function(t){
+      return bounds.contains([t.latitude, t.longitude]);
+    });
+    var truncated = visible.length > MAX_MARKERS;
+    if (truncated) visible = visible.slice(0, MAX_MARKERS);
 
     var counts = {ok:0, warn:0, crit:0, idle:0};
     var delaySum = 0, delayN = 0;
 
-    trains.forEach(function(t){
-      trainByTrip[t.trip_id] = t;
+    visible.forEach(function(t){
       var st = statusForDelay(t.retard_s);
       counts[st]++;
       if (t.retard_s !== null && t.retard_s !== undefined){ delaySum += t.retard_s; delayN++; }
@@ -506,7 +549,7 @@
       var marker = L.marker([t.latitude, t.longitude], {
         icon: makeIcon(st, t.statut, t.trip_id === selectedTripId, !!t.cause_retard)
       });
-      marker.bindTooltip(routeLabel(t.route_id, t.trip_id) + " · " + fmtDelay(t.retard_s), {
+      marker.bindTooltip(routeLabel(t.ligne, t.route_id, t.trip_id) + " · " + fmtDelay(t.retard_s), {
         direction: "top", offset: [0, -10], className: "train-tt"
       });
       marker.on("click", function(){ openInspector(t.trip_id); });
@@ -518,11 +561,19 @@
     document.getElementById("cWarn").textContent = counts.warn;
     document.getElementById("cCrit").textContent = counts.crit;
     document.getElementById("cIdle").textContent = counts.idle;
-    document.getElementById("statTotal").textContent = trains.length;
+    document.getElementById("statTotal").textContent = visible.length + (truncated ? "+" : "") + " / " + allTrains.length;
     document.getElementById("statAvg").textContent = delayN ? ("+" + Math.round(delaySum/delayN/60) + " min") : "—";
+  }
 
+  function render(trains){
+    allTrains = trains;
+    trainByTrip = {};
+    trains.forEach(function(t){ trainByTrip[t.trip_id] = t; });
+    renderVisible();
     refreshInspector();
   }
+
+  map.on("moveend zoomend", renderVisible);
 
   var pulseDot = document.getElementById("pulseDot");
   var pulseLabel = document.getElementById("pulseLabel");
@@ -549,7 +600,11 @@
   }
 
   function tick(){
-    fetch("/realtime/trains?max_age_s=600", { headers: { "X-API-Key": API_KEY } })
+    // detail_trip_id : seul le train sélectionné reçoit son itinéraire (parcouru/restant) —
+    // un tracé réel (Pays-Bas) a des centaines de points, inutile de le transmettre pour des
+    // centaines de trains non affichés à chaque rafraîchissement (cf. apps/api/main.py).
+    var url = "/realtime/trains?max_age_s=600" + (selectedTripId ? "&detail_trip_id=" + encodeURIComponent(selectedTripId) : "");
+    fetch(url, { headers: { "X-API-Key": API_KEY } })
       .then(function(res){
         if (!res.ok) throw new Error("HTTP " + res.status);
         return res.json();

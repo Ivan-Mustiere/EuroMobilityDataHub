@@ -9,6 +9,25 @@ models:
           - unique
           - not_null
 
+  - name: dim_stations_multipays
+    description: >
+      Référentiel des gares des 8 pays couverts par le temps réel (FR/CH/NL/IT/FI/PL/DE/SE, Gold)
+      — cf. apps/pipeline/transform.py, export_dim_stations_multipays.
+    columns:
+      - name: id_gare
+        tests:
+          - unique
+          - not_null
+      - name: station_id
+        tests:
+          - not_null
+      - name: pays
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["FR", "CH", "NL", "IT", "FI", "PL", "DE", "SE"]
+
   - name: fact_regularite
     description: Ponctualité/annulations harmonisées TGV/TER/Intercités (Gold).
     columns:

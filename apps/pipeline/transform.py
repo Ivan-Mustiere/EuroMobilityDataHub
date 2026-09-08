@@ -27,6 +27,7 @@ publient qu'un taux de régularité agrégé (pas de retard moyen ni de P90 par 
 import argparse
 import os
 import pathlib
+import zipfile
 
 import duckdb
 import yaml
@@ -41,6 +42,23 @@ INTERCITES_CSV = RAW_DIR / "regularite_intercites.csv"
 GARES_CSV = RAW_DIR / "gares.csv"
 TARIFS_TGV_CSV = RAW_DIR / "tarifs_tgv_ouigo.csv"
 TARIFS_INTERCITES_CSV = RAW_DIR / "tarifs_intercites.csv"
+CH_GTFS_ZIP = RAW_DIR / "ch_gtfs_static.zip"
+NL_GTFS_ZIP = RAW_DIR / "nl_gtfs_static.zip"
+IT_GTFS_ZIP = RAW_DIR / "it_gtfs_static.zip"
+FI_STATIONS_JSON = RAW_DIR / "fi_stations.json"
+PL_GTFS_ZIP = RAW_DIR / "pl_gtfs_static.zip"
+DE_GTFS_ZIP = RAW_DIR / "de_gtfs_static.zip"
+SE_GTFS_ZIP = RAW_DIR / "se_gtfs_static.zip"
+# Vocabulaire GTFS "basic route types" (pas la variante étendue européenne utilisée par la Suisse) :
+# 2 = Rail. Cf. build_de_reference.
+DE_RAIL_ROUTE_TYPE = "2"
+
+# Vocabulaire GTFS "extended route types" (norme européenne) : 100-117 = famille rail
+# (100 Railway, 101 High Speed, 102 Long Distance, 103 Inter Regional, 105 Sleeper, 106 Regional,
+# 107 Tourist, 109 Suburban, 116 Rack/Pinion, 117 Additional Rail...). Le flux GTFS-RT suisse
+# mélange tous les modes (bus/tram/rail) ; ce filtre sert à ne garder que les trains
+# (cf. apps/streaming/producer.py, RAIL_ROUTES_FILE).
+CH_RAIL_ROUTE_TYPES = set(range(100, 118))
 
 
 def load_config(env: str) -> dict:
@@ -165,9 +183,510 @@ def build_dim_stations(con: duckdb.DuckDBPyConnection, gares_csv: pathlib.Path =
             "Code_UIC" AS code_uic,
             "Code commune" AS code_commune,
             TRY_CAST(SPLIT_PART("Position géographique", ',', 1) AS DOUBLE) AS latitude,
-            TRY_CAST(TRIM(SPLIT_PART("Position géographique", ',', 2)) AS DOUBLE) AS longitude
+            TRY_CAST(TRIM(SPLIT_PART("Position géographique", ',', 2)) AS DOUBLE) AS longitude,
+            'FR' AS pays
         FROM read_csv('{pathlib.Path(gares_csv).as_posix()}', delim=';', header=true)
     """)
+
+
+def build_ch_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = CH_GTFS_ZIP) -> None:
+    """Référentiel suisse (gares + lignes ferroviaires), pour le temps réel CH.
+
+    Contrairement à la SNCF, le flux GTFS-RT suisse ne publie quasiment jamais le code UIC
+    directement dans le `stop_id` (format "sloid" pour 165 932 arrêts sur ~166 000 testés lors de
+    l'exploration) : il faut le référentiel statique (stops.txt) pour le résoudre, via sa colonne
+    `didok` (code UIC/DiDok classique, présent pour toute variante de stop_id, y compris les
+    "sloid" au niveau quai). Ce même flux mélange aussi tous les modes de transport (bus/tram/
+    rail) : routes.txt (route_type, vocabulaire GTFS étendu européen) sert à isoler les trains.
+
+    Si `gtfs_zip` est absent, ne fait rien (pas d'échec bloquant : la Suisse est un ajout, pas un
+    prérequis du pipeline existant).
+    """
+    if not gtfs_zip.exists():
+        print(f"[transform] {gtfs_zip} absent, référentiel suisse ignoré (voir apps/pipeline/ingest.py)")
+        return
+
+    stops_csv = RAW_DIR / "ch_stops.csv"
+    routes_csv = RAW_DIR / "ch_routes.csv"
+    agency_csv = RAW_DIR / "ch_agency.csv"
+    with zipfile.ZipFile(gtfs_zip) as z:
+        for member, dest in [("stops.txt", stops_csv), ("routes.txt", routes_csv), ("agency.txt", agency_csv)]:
+            with z.open(member) as src, open(dest, "wb") as out:
+                out.write(src.read())
+
+    # Limite documentée : stops.txt couvre TOUS les arrêts suisses ayant un code didok (bus, tram,
+    # rail confondus) — on ne peut isoler les seuls arrêts ferroviaires qu'via stop_times.txt
+    # (3 Go non chargé ici, cf. plan Suisse). Sans conséquence pour le temps réel (seuls des
+    # codes UIC réellement référencés par un trajet ferroviaire sont interrogés), mais /stations
+    # et /stations/{id} exposeront aussi des arrêts de bus/tram suisses (pays='CH').
+    #
+    # Une gare par code `didok` (comme `stations_dedup` dans build_dim_liaisons pour les
+    # collisions de nom : on moyenne les coordonnées des variantes plutôt que d'en choisir une
+    # arbitrairement — la France utilise la même logique de dédoublonnage).
+    con.execute(f"""
+        INSERT INTO dim_stations
+        SELECT
+            didok AS station_id,
+            FIRST(stop_name) AS nom_gare,
+            {_normalize_station_name_expr("FIRST(stop_name)")} AS nom_gare_norm,
+            NULL AS trigramme,
+            didok AS code_uic,
+            NULL AS code_commune,
+            AVG(TRY_CAST(stop_lat AS DOUBLE)) AS latitude,
+            AVG(TRY_CAST(stop_lon AS DOUBLE)) AS longitude,
+            'CH' AS pays
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'didok': 'VARCHAR', 'stop_id': 'VARCHAR'}})
+        WHERE didok IS NOT NULL AND didok != ''
+        GROUP BY didok
+    """)
+
+    # Table de résolution stop_id (brut, y compris "sloid" au niveau quai) -> code UIC : c'est
+    # elle, pas dim_stations, que /realtime/trains consulte pour rapprocher un stop_id GTFS-RT
+    # suisse d'une gare (cf. apps/api/main.py, _uic_from_stop_id).
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_stop_uic_ch AS
+        SELECT stop_id, didok AS code_uic
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'didok': 'VARCHAR', 'stop_id': 'VARCHAR'}})
+        WHERE didok IS NOT NULL AND didok != ''
+    """)
+
+    rail_route_types = ",".join(str(t) for t in sorted(CH_RAIL_ROUTE_TYPES))
+    rail_route_ids = con.execute(f"""
+        SELECT route_id
+        FROM read_csv('{routes_csv.as_posix()}', header=true)
+        WHERE TRY_CAST(route_type AS INTEGER) IN ({rail_route_types})
+    """).fetchall()
+    rail_routes_file = RAW_DIR / "ch_rail_routes.txt"
+    rail_routes_file.write_text("\n".join(row[0] for row in rail_route_ids) + "\n", encoding="utf-8")
+    print(f"[transform] {rail_routes_file} écrit ({len(rail_route_ids)} lignes ferroviaires)")
+
+    # Libellé de ligne (ex. "S10", "IC1") par route_id, pour l'affichage sur la carte (radar.html,
+    # routeLabel) — le route_id du flux temps réel suisse (ex. "91-71A-j26-1") n'est pas lisible
+    # tel quel, contrairement au régime français où route_id est souvent absent et remplacé par un
+    # nom de gamme déduit du trip_id (TGV INOUI, TER...).
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_route_label_ch AS
+        SELECT route_id, route_short_name AS label
+        FROM read_csv('{routes_csv.as_posix()}', header=true)
+        WHERE route_short_name IS NOT NULL AND route_short_name != ''
+    """)
+
+    # Opérateur (ex. "Schweizerische Bundesbahnen SBB", "THURBO") par route_id, pour l'affichage
+    # "qui gère ce train" sur la carte (radar.html) — la Suisse a de nombreux opérateurs
+    # régionaux distincts, contrairement à la France (toujours SNCF, cf. apps/api/main.py).
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_route_operator_ch AS
+        SELECT r.route_id, a.agency_name AS operateur
+        FROM read_csv('{routes_csv.as_posix()}', header=true, types={{'agency_id': 'VARCHAR'}}) r
+        JOIN read_csv('{agency_csv.as_posix()}', header=true, types={{'agency_id': 'VARCHAR'}}) a
+          ON a.agency_id = r.agency_id
+    """)
+
+
+def build_nl_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = NL_GTFS_ZIP) -> None:
+    """Référentiel néerlandais (gares), pour le temps réel NL.
+
+    Bien plus simple que la Suisse (cf. build_ch_reference) : `trainUpdates.pb` (utilisé par
+    apps/streaming/producer.py) est déjà un flux dédié aux trains — contrairement au flux suisse
+    qui mélange tous les modes, pas besoin de filtrer par type de ligne. Et 99,8% des `stop_id`
+    (35783/35841 événements testés lors de l'exploration) sont déjà des codes à 7-8 chiffres que
+    la regex existante (_STOP_ID_UIC_RE, apps/api/main.py) sait extraire directement : pas besoin
+    d'une table de résolution séparée comme dim_stop_uic_ch. Limite connue et acceptée : les ~0,2%
+    de stop_id à 6 chiffres ne sont pas rapprochés (pas de position inventée).
+
+    Si `gtfs_zip` est absent, ne fait rien (pas d'échec bloquant : ajout, pas un prérequis).
+    """
+    if not gtfs_zip.exists():
+        print(f"[transform] {gtfs_zip} absent, référentiel néerlandais ignoré (voir apps/pipeline/ingest.py)")
+        return
+
+    stops_csv = RAW_DIR / "nl_stops.csv"
+    with zipfile.ZipFile(gtfs_zip) as z, z.open("stops.txt") as src, open(stops_csv, "wb") as out:
+        out.write(src.read())
+
+    con.execute(f"""
+        INSERT INTO dim_stations
+        SELECT
+            stop_id AS station_id,
+            stop_name AS nom_gare,
+            {_normalize_station_name_expr("stop_name")} AS nom_gare_norm,
+            NULL AS trigramme,
+            stop_id AS code_uic,
+            NULL AS code_commune,
+            TRY_CAST(stop_lat AS DOUBLE) AS latitude,
+            TRY_CAST(stop_lon AS DOUBLE) AS longitude,
+            'NL' AS pays
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
+        WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
+    """)
+
+    # Tracé réel des voies (shapes.txt), pour dessiner le trajet d'un train sélectionné en suivant
+    # la géométrie réelle plutôt que des segments droits entre gares. Le trip_id du flux temps réel
+    # (apps/streaming/producer.py) ne correspond exactement au trip_id de trips.txt que pour ~91%
+    # des trains observés lors de l'exploration (le reste utilise un format préfixé par la date de
+    # service, ex. "2026-09-07:IFF:S:318953", sans correspondance fiable) — limite acceptée, pas de
+    # correspondance approximative risquée : les ~9% restants gardent le tracé en ligne droite.
+    routes_csv = RAW_DIR / "nl_routes.csv"
+    trips_csv = RAW_DIR / "nl_trips.csv"
+    shapes_csv = RAW_DIR / "nl_shapes.csv"
+    agency_csv = RAW_DIR / "nl_agency.csv"
+    with zipfile.ZipFile(gtfs_zip) as z:
+        for member, dest in [("routes.txt", routes_csv), ("trips.txt", trips_csv),
+                              ("shapes.txt", shapes_csv), ("agency.txt", agency_csv)]:
+            with z.open(member) as src, open(dest, "wb") as out:
+                out.write(src.read())
+
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_trip_shape_nl AS
+        SELECT t.trip_id, t.shape_id
+        FROM read_csv('{trips_csv.as_posix()}', header=true,
+                       types={{'trip_id': 'VARCHAR', 'shape_id': 'VARCHAR', 'route_id': 'VARCHAR'}}) t
+        JOIN read_csv('{routes_csv.as_posix()}', header=true, types={{'route_id': 'VARCHAR'}}) r
+          ON r.route_id = t.route_id
+        WHERE r.route_type = '2' AND t.shape_id IS NOT NULL AND t.shape_id != ''
+    """)
+
+    # Libellé de gamme (ex. "Intercity", "Sprinter"), pour l'affichage sur la carte (radar.html,
+    # routeLabel) — sans lien avec le tracé réel ci-dessus (couverture différente : disponible pour
+    # la quasi-totalité des trajets, contrairement aux ~91% ayant un shape_id).
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_trip_label_nl AS
+        SELECT t.trip_id, t.trip_long_name AS label
+        FROM read_csv('{trips_csv.as_posix()}', header=true,
+                       types={{'trip_id': 'VARCHAR', 'route_id': 'VARCHAR'}}) t
+        JOIN read_csv('{routes_csv.as_posix()}', header=true, types={{'route_id': 'VARCHAR'}}) r
+          ON r.route_id = t.route_id
+        WHERE r.route_type = '2' AND t.trip_long_name IS NOT NULL AND t.trip_long_name != ''
+    """)
+
+    # Opérateur (ex. "NS", "Arriva", "Keolis") par route_id, pour l'affichage "qui gère ce train"
+    # sur la carte (radar.html) — les Pays-Bas ont plusieurs opérateurs régionaux, contrairement à
+    # la France (toujours SNCF, cf. apps/api/main.py).
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_route_operator_nl AS
+        SELECT DISTINCT r.route_id, a.agency_name AS operateur
+        FROM read_csv('{routes_csv.as_posix()}', header=true, types={{'agency_id': 'VARCHAR', 'route_id': 'VARCHAR'}}) r
+        JOIN read_csv('{agency_csv.as_posix()}', header=true, types={{'agency_id': 'VARCHAR'}}) a
+          ON a.agency_id = r.agency_id
+        WHERE r.route_type = '2'
+    """)
+
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_shapes_nl AS
+        SELECT
+            shape_id,
+            list([TRY_CAST(shape_pt_lat AS DOUBLE), TRY_CAST(shape_pt_lon AS DOUBLE)]
+                 ORDER BY TRY_CAST(shape_pt_sequence AS INTEGER)) AS points
+        FROM read_csv('{shapes_csv.as_posix()}', header=true, types={{'shape_id': 'VARCHAR'}})
+        WHERE shape_id IN (SELECT DISTINCT shape_id FROM dim_trip_shape_nl)
+        GROUP BY shape_id
+    """)
+
+
+def build_it_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = IT_GTFS_ZIP) -> None:
+    """Référentiel du flux temps réel Trenitalia France (trains transfrontaliers Paris/Lyon-Milan,
+    pas le réseau italien domestique — aucun flux GTFS-RT national italien ouvert n'a été trouvé),
+    pour le temps réel IT.
+
+    Le plus simple des trois référentiels étrangers : ~20 gares seulement, un seul opérateur
+    (Trenitalia), stop_id déjà directement exploitable (pas de format "sloid" comme la Suisse) —
+    mais trop court (5 chiffres) pour la regex UIC existante (_STOP_ID_UIC_RE, 7-8 chiffres,
+    apps/api/main.py) : dim_stop_uic_it fournit quand même la résolution, par simple identité.
+
+    Si `gtfs_zip` est absent, ne fait rien (pas d'échec bloquant : ajout, pas un prérequis).
+    """
+    if not gtfs_zip.exists():
+        print(f"[transform] {gtfs_zip} absent, référentiel italien ignoré (voir apps/pipeline/ingest.py)")
+        return
+
+    stops_csv = RAW_DIR / "it_stops.csv"
+    routes_csv = RAW_DIR / "it_routes.csv"
+    with zipfile.ZipFile(gtfs_zip) as z:
+        for member, dest in [("stops.txt", stops_csv), ("routes.txt", routes_csv)]:
+            with z.open(member) as src, open(dest, "wb") as out:
+                out.write(src.read())
+
+    con.execute(f"""
+        INSERT INTO dim_stations
+        SELECT
+            stop_id AS station_id,
+            stop_name AS nom_gare,
+            {_normalize_station_name_expr("stop_name")} AS nom_gare_norm,
+            NULL AS trigramme,
+            stop_id AS code_uic,
+            NULL AS code_commune,
+            TRY_CAST(stop_lat AS DOUBLE) AS latitude,
+            TRY_CAST(stop_lon AS DOUBLE) AS longitude,
+            'IT' AS pays
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
+        WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_stop_uic_it AS
+        SELECT stop_id, stop_id AS code_uic
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_route_label_it AS
+        SELECT route_id, route_short_name AS label
+        FROM read_csv('{routes_csv.as_posix()}', header=true, types={{'route_id': 'VARCHAR'}})
+        WHERE route_short_name IS NOT NULL AND route_short_name != ''
+    """)
+
+
+def build_fi_reference(con: duckdb.DuckDBPyConnection, stations_json: pathlib.Path = FI_STATIONS_JSON) -> None:
+    """Référentiel des gares finlandaises (Digitraffic/VR), pour le temps réel FI.
+
+    Le plus simple des référentiels étrangers après l'Italie : un seul appel JSON (~1000 gares,
+    tous types confondus — pas de distinction rail/route ici, Digitraffic ne couvre que le rail).
+    `stationUICCode` (identifiant interne finlandais, pas un vrai code UIC international malgré le
+    nom) sert de code_uic, trop court pour la regex existante (_STOP_ID_UIC_RE, apps/api/main.py) :
+    dim_stop_uic_fi fournit la résolution par identité, comme pour l'Italie.
+
+    `countryCode = 'FI'` : le JSON Digitraffic contient aussi quelques gares frontalières
+    étrangères (10 russes, 1 suédoise, vérifié) — sans ce filtre, deux gares distinctes peuvent
+    partager un même stationUICCode (ex. 1000 = Ahvenus en Finlande ET Petroskoi/Petrozavodsk en
+    Russie), ce qui casserait l'unicité de station_id (cf. dbt/models/marts/dim_stations_multipays.sql).
+
+    Si `stations_json` est absent, ne fait rien (pas d'échec bloquant : ajout, pas un prérequis).
+    """
+    if not stations_json.exists():
+        print(f"[transform] {stations_json} absent, référentiel finlandais ignoré (voir apps/pipeline/ingest.py)")
+        return
+
+    con.execute(f"""
+        INSERT INTO dim_stations
+        SELECT
+            CAST(stationUICCode AS VARCHAR) AS station_id,
+            stationName AS nom_gare,
+            {_normalize_station_name_expr("stationName")} AS nom_gare_norm,
+            stationShortCode AS trigramme,
+            CAST(stationUICCode AS VARCHAR) AS code_uic,
+            NULL AS code_commune,
+            latitude,
+            longitude,
+            'FI' AS pays
+        FROM read_json_auto('{stations_json.as_posix()}')
+        WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND countryCode = 'FI'
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_stop_uic_fi AS
+        SELECT CAST(stationUICCode AS VARCHAR) AS stop_id, CAST(stationUICCode AS VARCHAR) AS code_uic
+        FROM read_json_auto('{stations_json.as_posix()}')
+        WHERE countryCode = 'FI'
+    """)
+
+
+def build_pl_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = PL_GTFS_ZIP) -> None:
+    """Référentiel polonais (gares + résolution stop_sequence -> stop_id), pour le temps réel PL.
+
+    Flux GTFS-RT valide (heures absolues à 100 % testées) mais atypique : les StopTimeUpdate ne
+    publient qu'un stop_sequence, pas de stop_id — il faut recouper avec l'horaire théorique
+    (stop_times.txt) pour le retrouver. Écrit ce recoupement dans un fichier plat
+    (data/raw/pl_stop_sequence_map.csv) lu par apps/streaming/producer.py au démarrage
+    (STOP_SEQUENCE_MAP_FILE), plutôt que de le faire à la volée dans l'API — même principe que
+    ch_rail_routes.txt pour la Suisse.
+
+    stop_id polonais (ex. "10009_RAIL_1_105") n'est pas un vrai code UIC : dim_stop_uic_pl le
+    fournit par identité, comme pour l'Italie/la Finlande. Limite acceptée : plusieurs variantes
+    de stop_id (quai, "_FALLBACK"...) pour une même gare physique apparaissent comme des gares
+    distinctes dans dim_stations (mêmes coordonnées, pas d'incohérence, juste redondant).
+
+    Si `gtfs_zip` est absent, ne fait rien (pas d'échec bloquant : ajout, pas un prérequis).
+    """
+    if not gtfs_zip.exists():
+        print(f"[transform] {gtfs_zip} absent, référentiel polonais ignoré (voir apps/pipeline/ingest.py)")
+        return
+
+    stops_csv = RAW_DIR / "pl_stops.csv"
+    stop_times_csv = RAW_DIR / "pl_stop_times.csv"
+    with zipfile.ZipFile(gtfs_zip) as z:
+        for member, dest in [("stops.txt", stops_csv), ("stop_times.txt", stop_times_csv)]:
+            with z.open(member) as src, open(dest, "wb") as out:
+                out.write(src.read())
+
+    con.execute(f"""
+        INSERT INTO dim_stations
+        SELECT
+            stop_id AS station_id,
+            stop_name AS nom_gare,
+            {_normalize_station_name_expr("stop_name")} AS nom_gare_norm,
+            NULL AS trigramme,
+            stop_id AS code_uic,
+            NULL AS code_commune,
+            TRY_CAST(stop_lat AS DOUBLE) AS latitude,
+            TRY_CAST(stop_lon AS DOUBLE) AS longitude,
+            'PL' AS pays
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
+        WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_stop_uic_pl AS
+        SELECT stop_id, stop_id AS code_uic
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
+    """)
+
+    # arrival_seconds/departure_seconds : heure théorique en secondes depuis minuit (peut dépasser
+    # 86400 pour un trajet après minuit, convention GTFS standard "HH:MM:SS" avec HH >= 24) — sert
+    # à calculer le retard nous-mêmes (apps/streaming/producer.py), le flux temps réel polonais ne
+    # publiant qu'une heure absolue, jamais de délai (à l'inverse de la Suisse).
+    stop_sequence_map_file = RAW_DIR / "pl_stop_sequence_map.csv"
+    con.execute(f"""
+        COPY (
+            SELECT
+                trip_id, stop_sequence, stop_id,
+                TRY_CAST(split_part(arrival_time, ':', 1) AS INTEGER) * 3600
+                    + TRY_CAST(split_part(arrival_time, ':', 2) AS INTEGER) * 60
+                    + TRY_CAST(split_part(arrival_time, ':', 3) AS INTEGER) AS arrival_seconds,
+                TRY_CAST(split_part(departure_time, ':', 1) AS INTEGER) * 3600
+                    + TRY_CAST(split_part(departure_time, ':', 2) AS INTEGER) * 60
+                    + TRY_CAST(split_part(departure_time, ':', 3) AS INTEGER) AS departure_seconds
+            FROM read_csv('{stop_times_csv.as_posix()}', header=true,
+                           types={{'trip_id': 'VARCHAR', 'stop_id': 'VARCHAR'}})
+        ) TO '{stop_sequence_map_file.as_posix()}' (HEADER, DELIMITER ',')
+    """)
+    print(f"[transform] {stop_sequence_map_file} écrit")
+
+
+def build_de_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = DE_GTFS_ZIP) -> None:
+    """Référentiel allemand (DELFI, agrégat national gtfs.de), pour le temps réel DE.
+
+    Comme la Suisse : le flux temps réel (realtime-free.pb) mélange tous les modes de transport,
+    filtré ici sur route_type='2' (Rail — vocabulaire GTFS de base, pas la variante étendue
+    européenne utilisée par la Suisse). Contrairement à la Suisse, heures absolues publiées à
+    100 % (vérifié) et stop_id déjà directement présent dans le flux — mais pas de shapes.txt
+    (comme la Suisse, contrairement aux Pays-Bas/Pologne) et pas de code UIC séparé : dim_stop_uic_de
+    fournit la résolution par identité (stop_id allemand trop court/non numérique pour la regex
+    existante, ex. "661713" à 6 chiffres).
+
+    Ne charge ni ne télécharge stop_times.txt (2,17 Go, inutile ici — le filtre rail ne dépend que
+    de trips.txt + routes.txt).
+
+    Si `gtfs_zip` est absent, ne fait rien (pas d'échec bloquant : ajout, pas un prérequis).
+    """
+    if not gtfs_zip.exists():
+        print(f"[transform] {gtfs_zip} absent, référentiel allemand ignoré (voir apps/pipeline/ingest.py)")
+        return
+
+    stops_csv = RAW_DIR / "de_stops.csv"
+    routes_csv = RAW_DIR / "de_routes.csv"
+    trips_csv = RAW_DIR / "de_trips.csv"
+    with zipfile.ZipFile(gtfs_zip) as z:
+        for member, dest in [("stops.txt", stops_csv), ("routes.txt", routes_csv), ("trips.txt", trips_csv)]:
+            with z.open(member) as src, open(dest, "wb") as out:
+                out.write(src.read())
+
+    con.execute(f"""
+        INSERT INTO dim_stations
+        SELECT
+            stop_id AS station_id,
+            stop_name AS nom_gare,
+            {_normalize_station_name_expr("stop_name")} AS nom_gare_norm,
+            NULL AS trigramme,
+            stop_id AS code_uic,
+            NULL AS code_commune,
+            TRY_CAST(stop_lat AS DOUBLE) AS latitude,
+            TRY_CAST(stop_lon AS DOUBLE) AS longitude,
+            'DE' AS pays
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
+        WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_stop_uic_de AS
+        SELECT stop_id, stop_id AS code_uic
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
+    """)
+
+    # Filtre par trip_id, pas par route_id : le flux temps réel allemand ne publie jamais de
+    # route_id (0/88101 testés), contrairement à la Suisse — d'où RAIL_TRIPS_FILE plutôt que
+    # RAIL_ROUTES_FILE (cf. apps/streaming/producer.py).
+    rail_trip_ids = con.execute(f"""
+        SELECT t.trip_id
+        FROM read_csv('{trips_csv.as_posix()}', header=true, types={{'route_id': 'VARCHAR', 'trip_id': 'VARCHAR'}}) t
+        JOIN read_csv('{routes_csv.as_posix()}', header=true, types={{'route_id': 'VARCHAR', 'route_type': 'VARCHAR'}}) r
+          ON r.route_id = t.route_id
+        WHERE r.route_type = '{DE_RAIL_ROUTE_TYPE}'
+    """).fetchall()
+    rail_trips_file = RAW_DIR / "de_rail_trips.txt"
+    rail_trips_file.write_text("\n".join(row[0] for row in rail_trip_ids) + "\n", encoding="utf-8")
+    print(f"[transform] {rail_trips_file} écrit ({len(rail_trip_ids)} trajets ferroviaires)")
+
+
+def build_se_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = SE_GTFS_ZIP) -> None:
+    """Référentiel suédois (GTFS Sweden 3, Trafiklab/Samtrafiken), pour le temps réel SE.
+
+    L'API GTFS-RT Sweden n'expose PAS de flux national SJ (opérateur ferroviaire longue distance,
+    absent de l'enum `operator` : https://raw.githubusercontent.com/trafiklab/openApi-docs/master/
+    gtfsSwedenRealtime.yaml) — seuls des opérateurs régionaux sont disponibles. producer.py
+    interroge celui de Skånetrafiken (cf. se.env), qui couvre entre autres les trains Öresundståg
+    (Malmö/Köpenhamn) : le seul, parmi les opérateurs exposés, dont le réseau ferroviaire est
+    significatif (vérifié en explorant les autres : essentiellement du bus/tram).
+
+    Comme l'Allemagne (build_de_reference) : le flux mélange tous les modes et ne publie quasiment
+    jamais de route_id (844/851 entités testées sur le flux Skånetrafiken) -> filtre par trip_id
+    (RAIL_TRIPS_FILE), pas par route_id. route_type au format étendu européen (100-117, comme la
+    Suisse, CH_RAIL_ROUTE_TYPES), pas le "2" basique allemand : vérifié sur les lignes Öresundståg
+    (802/803/804, route_type=100).
+
+    Contrairement aux autres pays, le zip statique est un agrégat national UNIQUE (tous opérateurs/
+    modes confondus, ~58 opérateurs) plutôt qu'un flux déjà propre à un seul opérateur : stops.txt
+    couvre donc toute la Suède (182 000 arrêts), inséré tel quel dans dim_stations sans filtre rail
+    (même limite acceptée que build_de_reference : /stations exposera aussi des arrêts non
+    ferroviaires suédois). stop_id au format NeTEx suédois (16 chiffres, ex.
+    "9022050025317002") : trop long pour la regex UIC existante (_STOP_ID_UIC_RE, apps/api/
+    main.py) -> dim_stop_uic_se résout par identité, comme l'Italie/la Finlande/la Pologne/
+    l'Allemagne.
+
+    Ne charge ni ne télécharge stop_times.txt (693 Mo) ni shapes.txt (2,4 Go), inutiles ici — même
+    principe que build_de_reference.
+
+    Si `gtfs_zip` est absent, ne fait rien (pas d'échec bloquant : ajout, pas un prérequis).
+    """
+    if not gtfs_zip.exists():
+        print(f"[transform] {gtfs_zip} absent, référentiel suédois ignoré (voir apps/pipeline/ingest.py)")
+        return
+
+    stops_csv = RAW_DIR / "se_stops.csv"
+    routes_csv = RAW_DIR / "se_routes.csv"
+    trips_csv = RAW_DIR / "se_trips.csv"
+    with zipfile.ZipFile(gtfs_zip) as z:
+        for member, dest in [("stops.txt", stops_csv), ("routes.txt", routes_csv), ("trips.txt", trips_csv)]:
+            with z.open(member) as src, open(dest, "wb") as out:
+                out.write(src.read())
+
+    con.execute(f"""
+        INSERT INTO dim_stations
+        SELECT
+            stop_id AS station_id,
+            stop_name AS nom_gare,
+            {_normalize_station_name_expr("stop_name")} AS nom_gare_norm,
+            NULL AS trigramme,
+            stop_id AS code_uic,
+            NULL AS code_commune,
+            TRY_CAST(stop_lat AS DOUBLE) AS latitude,
+            TRY_CAST(stop_lon AS DOUBLE) AS longitude,
+            'SE' AS pays
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
+        WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TABLE dim_stop_uic_se AS
+        SELECT stop_id, stop_id AS code_uic
+        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
+    """)
+
+    rail_route_types = ",".join(str(t) for t in sorted(CH_RAIL_ROUTE_TYPES))
+    rail_trip_ids = con.execute(f"""
+        SELECT t.trip_id
+        FROM read_csv('{trips_csv.as_posix()}', header=true,
+                       types={{'route_id': 'VARCHAR', 'trip_id': 'VARCHAR'}}) t
+        JOIN read_csv('{routes_csv.as_posix()}', header=true, types={{'route_id': 'VARCHAR'}}) r
+          ON r.route_id = t.route_id
+        WHERE TRY_CAST(r.route_type AS INTEGER) IN ({rail_route_types})
+    """).fetchall()
+    rail_trips_file = RAW_DIR / "se_rail_trips.txt"
+    rail_trips_file.write_text("\n".join(row[0] for row in rail_trip_ids) + "\n", encoding="utf-8")
+    print(f"[transform] {rail_trips_file} écrit ({len(rail_trip_ids)} trajets ferroviaires)")
 
 
 def build_dim_liaisons(con: duckdb.DuckDBPyConnection) -> None:
@@ -299,6 +818,31 @@ def build_fact_fares(
     """)
 
 
+DIM_STATIONS_MULTIPAYS_CSV = RAW_DIR / "dim_stations_multipays.csv"
+
+
+def export_dim_stations_multipays(con: duckdb.DuckDBPyConnection, dest: pathlib.Path = DIM_STATIONS_MULTIPAYS_CSV) -> None:
+    """Exporte dim_stations (les 8 pays : FR + CH/NL/IT/FI/PL/DE/SE) en CSV, pour remontée dans
+    l'entrepôt Snowflake (apps/pipeline/load_cloud.py, dbt/models/marts/dim_stations_multipays.sql)
+    — jusqu'ici cette table ne vivait qu'en local (DuckDB), au service de l'API/Bloc 2 uniquement.
+
+    `station_id` seul n'est PAS unique entre pays (ex. "1" existe à la fois en Allemagne et en
+    Finlande, cf. apps/api/main.py, _uic_from_stop_id) : la clé Gold composite est construite côté
+    dbt (pays || ':' || station_id), pas ici.
+
+    Délimiteur ';' (pas ',') : réutilise le format Snowflake existant SNCF_CSV (infra/terraform/
+    snowflake.tf), point-virgule comme les exports data.gouv.fr, plutôt que de définir un nouveau
+    FILE FORMAT Snowflake pour ce seul fichier.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    con.execute(f"""
+        COPY (SELECT * FROM dim_stations ORDER BY pays, station_id)
+        TO '{dest.as_posix()}' (HEADER, DELIMITER ';')
+    """)
+    n = con.execute("SELECT COUNT(*) FROM dim_stations").fetchone()[0]
+    print(f"[transform] {dest} écrit ({n} gares, 8 pays)")
+
+
 def apply_dev_sample(con: duckdb.DuckDBPyConnection, sample_cfg: dict) -> None:
     liaisons_max = sample_cfg.get("liaisons_max", 1)
     mois_max = sample_cfg.get("mois_max", 3)
@@ -354,8 +898,21 @@ def run(env: str) -> None:
         print(f"[transform] échantillon dev appliqué : {n_sample} lignes")
 
     build_dim_stations(con)
-    n_stations = con.execute("SELECT COUNT(*) FROM dim_stations").fetchone()[0]
-    print(f"[transform] table 'dim_stations' construite : {n_stations} gares")
+    build_ch_reference(con)
+    build_nl_reference(con)
+    build_it_reference(con)
+    build_fi_reference(con)
+    build_pl_reference(con)
+    build_de_reference(con)
+    build_se_reference(con)
+    n_stations, n_fr, n_ch, n_nl, n_it, n_fi, n_pl, n_de, n_se = con.execute(
+        "SELECT COUNT(*), SUM(pays = 'FR'), SUM(pays = 'CH'), SUM(pays = 'NL'), SUM(pays = 'IT'), "
+        "SUM(pays = 'FI'), SUM(pays = 'PL'), SUM(pays = 'DE'), SUM(pays = 'SE') FROM dim_stations"
+    ).fetchone()
+    print(f"[transform] table 'dim_stations' construite : {n_stations} gares "
+          f"({n_fr} FR, {n_ch} CH, {n_nl} NL, {n_it} IT, {n_fi} FI, {n_pl} PL, {n_de} DE, {n_se} SE)")
+
+    export_dim_stations_multipays(con)
 
     build_dim_liaisons(con)
     n_liaisons, n_avec_distance = con.execute(
