@@ -92,11 +92,6 @@ with DAG(
         bash_command=f"cd {APP_ROOT} && python apps/pipeline/profile_spark.py",
     )
 
-    transform_and_normalize = BashOperator(
-        task_id="transform_and_normalize",
-        bash_command=f"cd {APP_ROOT} && python apps/pipeline/run.py --env preprod --skip-download",
-    )
-
     load_staging_s3 = BashOperator(
         task_id="load_staging_s3",
         bash_command=f"cd {APP_ROOT} && python apps/pipeline/load_cloud.py --step upload",
@@ -112,11 +107,21 @@ with DAG(
         bash_command=DBT_RUN_COMMAND,
     )
 
+    # Référentiels dont apps/streaming/producer.py a besoin en local (RAIL_ROUTES_FILE,
+    # RAIL_TRIPS_FILE, STOP_SEQUENCE_MAP_FILE), relus depuis les tables Gold que dbt vient de
+    # construire ci-dessus — cf. apps/pipeline/export_producer_refs.py. Pas de décodage de clé
+    # nécessaire ici (contrairement à DBT_RUN_COMMAND) : SNOWFLAKE_PRIVATE_KEY_B64 est déjà lu
+    # directement par ce script.
+    export_producer_refs = BashOperator(
+        task_id="export_producer_refs",
+        bash_command=f"cd {APP_ROOT} && python apps/pipeline/export_producer_refs.py",
+    )
+
     (
         extract_all_sources
         >> validate_and_profile
-        >> transform_and_normalize
         >> load_staging_s3
         >> load_warehouse_snowflake
         >> aggregate_dbt
+        >> export_producer_refs
     )

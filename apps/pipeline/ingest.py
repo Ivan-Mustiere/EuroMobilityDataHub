@@ -1,14 +1,21 @@
 """Téléchargement des jeux de données SNCF (régularité TGV/TER/Intercités + référentiel gares)
 et des référentiels statiques GTFS suisse, néerlandais et italien (gares, pour le temps réel
-CH/NL/IT).
+CH/NL/IT), puis extraction des fichiers membres bruts des archives GTFS (dézipper, convertir le
+JSON finlandais en CSV plat) — aucune logique de transformation/filtre ici, uniquement de
+l'extraction de fichier : la harmonisation (dédoublonnage, filtre rail, jointures...) est portée
+par dbt directement sur ces fichiers bruts une fois en Bronze/Silver (cf. dbt/models/marts/), pas
+par du code Python local — DuckDB n'intervient plus nulle part dans ce pipeline.
 
-Idempotent : si un fichier existe déjà dans data/raw/, il n'est pas re-téléchargé
+Idempotent : si un fichier existe déjà dans data/raw/, il n'est pas re-téléchargé/ré-extrait
 sauf si --force est passé.
 """
 
 import argparse
+import csv
+import json
 import os
 import pathlib
+import zipfile
 
 import requests
 
@@ -146,6 +153,83 @@ def download(force: bool = False) -> None:
         raise RuntimeError(f"{len(errors)} source(s) en échec (voir logs ci-dessus) : {', '.join(errors)}")
 
 
+# Membres extraits par pays des archives GTFS ci-dessus, vers RAW_DIR/{pays}_{membre}.csv — mêmes
+# noms de fichiers que produisait jusqu'ici apps/pipeline/transform.py (build_xx_reference), pour
+# que dbt (Silver -> Gold) puisse les reprendre à l'identique une fois uploadés en Bronze
+# (apps/pipeline/load_cloud.py). stop_times.txt jamais extrait pour CH/NL/DE/SE (des centaines de
+# Mo à quelques Go, inutile ici, cf. commentaires historiques de transform.py) sauf pour la
+# Pologne, seul pays dont le flux temps réel ne référence les arrêts que par stop_sequence.
+_ZIP_MEMBERS = {
+    "ch": ("ch_gtfs_static.zip", ["stops.txt", "routes.txt", "agency.txt"]),
+    "nl": ("nl_gtfs_static.zip", ["stops.txt", "routes.txt", "trips.txt", "shapes.txt", "agency.txt"]),
+    "it": ("it_gtfs_static.zip", ["stops.txt", "routes.txt"]),
+    "pl": ("pl_gtfs_static.zip", ["stops.txt", "stop_times.txt"]),
+    "de": ("de_gtfs_static.zip", ["stops.txt", "routes.txt", "trips.txt"]),
+    "se": ("se_gtfs_static.zip", ["stops.txt", "routes.txt", "trips.txt"]),
+}
+
+
+def _extract_zip_members(pays: str, zip_filename: str, members: list[str], errors: list[str]) -> None:
+    zip_path = RAW_DIR / zip_filename
+    if not zip_path.exists():
+        print(f"[ingest] {zip_filename} absent, extraction {pays} ignorée")
+        return
+    try:
+        with zipfile.ZipFile(zip_path) as z:
+            for member in members:
+                dest = RAW_DIR / f"{pays}_{member.replace('.txt', '.csv')}"
+                if dest.exists():
+                    continue
+                with z.open(member) as src, open(dest, "wb") as out:
+                    out.write(src.read())
+        print(f"[ingest] {pays} : {len(members)} fichier(s) extrait(s) de {zip_filename}")
+    except Exception as exc:
+        print(f"[ingest] ÉCHEC extraction {pays} ({zip_filename}) : {exc!r}")
+        errors.append(f"extract:{pays}")
+
+
+def _convert_fi_stations_json_to_csv(errors: list[str]) -> None:
+    """fi_stations.json (liste de dicts plats) -> fi_stations.csv, même colonnes que le JSON —
+    aucun filtre ici (le filtre countryCode='FI', découvert en ajoutant la Suède, cf. historique
+    de build_fi_reference, devient un WHERE dbt, pas du Python)."""
+    src = RAW_DIR / "fi_stations.json"
+    dest = RAW_DIR / "fi_stations.csv"
+    if not src.exists():
+        print("[ingest] fi_stations.json absent, conversion FI ignorée")
+        return
+    if dest.exists():
+        return
+    try:
+        stations = json.loads(src.read_text(encoding="utf-8"))
+        with open(dest, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=list(stations[0].keys()))
+            writer.writeheader()
+            writer.writerows(stations)
+        print(f"[ingest] fi_stations.csv écrit ({len(stations)} gares)")
+    except Exception as exc:
+        print(f"[ingest] ÉCHEC conversion fi_stations.json : {exc!r}")
+        errors.append("extract:fi")
+
+
+def extract(force: bool = False) -> None:
+    """Extrait les fichiers membres bruts des archives GTFS téléchargées par download() ci-dessus
+    (dézipper est pure Python, zipfile — jamais du DuckDB), isolé par pays comme download() :
+    un pays qui échoue n'empêche pas les autres d'être extraits."""
+    if force:
+        for pays, (_, members) in _ZIP_MEMBERS.items():
+            for member in members:
+                (RAW_DIR / f"{pays}_{member.replace('.txt', '.csv')}").unlink(missing_ok=True)
+        (RAW_DIR / "fi_stations.csv").unlink(missing_ok=True)
+
+    errors: list[str] = []
+    for pays, (zip_filename, members) in _ZIP_MEMBERS.items():
+        _extract_zip_members(pays, zip_filename, members, errors)
+    _convert_fi_stations_json_to_csv(errors)
+
+    if errors:
+        raise RuntimeError(f"{len(errors)} extraction(s) en échec (voir logs ci-dessus) : {', '.join(errors)}")
+
+
 if __name__ == "__main__":
     from dotenv import load_dotenv
 
@@ -154,4 +238,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Télécharge les CSV de régularité SNCF (source ODbL, data.gouv.fr) et le référentiel GTFS suisse")
     parser.add_argument("--force", action="store_true", help="Re-télécharger même si le fichier existe déjà")
     args = parser.parse_args()
-    download(force=args.force)
+
+    # extract() tourne même si download() a eu des échecs partiels (isolation par source) : les
+    # zips téléchargés avec succès doivent quand même être extraits. Les deux erreurs sont
+    # combinées à la fin pour que la tâche Airflow échoue (et alerte) si l'une ou l'autre a échoué.
+    download_error = None
+    try:
+        download(force=args.force)
+    except RuntimeError as exc:
+        download_error = exc
+
+    extract_error = None
+    try:
+        extract(force=args.force)
+    except RuntimeError as exc:
+        extract_error = exc
+
+    if download_error or extract_error:
+        raise RuntimeError(" ; ".join(str(e) for e in (download_error, extract_error) if e))

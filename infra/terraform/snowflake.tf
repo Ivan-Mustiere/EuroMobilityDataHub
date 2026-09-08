@@ -66,6 +66,24 @@ resource "snowflake_file_format_csv" "bronze_csv" {
   comment                      = "Format des CSV SNCF (point-virgule) deposes dans le bucket Bronze"
 }
 
+# Format standard GTFS (virgule) pour les fichiers membres bruts extraits des archives GTFS
+# (apps/pipeline/ingest.py, extract()) : stops.txt/routes.txt/trips.txt/... convertis en CSV,
+# jamais au format SNCF (point-virgule) ci-dessus.
+resource "snowflake_file_format_csv" "gtfs_csv" {
+  database = snowflake_database.main.name
+  schema   = snowflake_schema.staging.name
+  name     = "GTFS_CSV"
+
+  field_delimiter              = ","
+  parse_header                 = true
+  field_optionally_enclosed_by = "\""
+  empty_field_as_null          = true
+  null_if                      = ["", "NULL"]
+  multi_line                   = true
+  skip_byte_order_mark         = true
+  comment                      = "Format standard GTFS (virgule) deposes dans le bucket Bronze"
+}
+
 resource "snowflake_stage_external_s3" "bronze" {
   database            = snowflake_database.main.name
   schema              = snowflake_schema.staging.name
@@ -171,6 +189,15 @@ resource "snowflake_grant_privileges_to_account_role" "etl_loader_file_format_us
   on_schema_object {
     object_type = "FILE FORMAT"
     object_name = snowflake_file_format_csv.bronze_csv.fully_qualified_name
+  }
+}
+
+resource "snowflake_grant_privileges_to_account_role" "etl_loader_gtfs_file_format_usage" {
+  privileges        = ["USAGE"]
+  account_role_name = snowflake_account_role.etl_loader.name
+  on_schema_object {
+    object_type = "FILE FORMAT"
+    object_name = snowflake_file_format_csv.gtfs_csv.fully_qualified_name
   }
 }
 

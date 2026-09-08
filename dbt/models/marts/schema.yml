@@ -1,18 +1,11 @@
 version: 2
 
 models:
-  - name: dim_stations
-    description: Référentiel des gares SNCF (Gold).
-    columns:
-      - name: station_id
-        tests:
-          - unique
-          - not_null
-
   - name: dim_stations_multipays
     description: >
       Référentiel des gares des 8 pays couverts par le temps réel (FR/CH/NL/IT/FI/PL/DE/SE, Gold)
-      — cf. apps/pipeline/transform.py, export_dim_stations_multipays.
+      — union par pays directement depuis les fichiers GTFS/CSV bruts en Silver (plus d'étape
+      DuckDB intermédiaire, cf. apps/pipeline/ingest.py:extract()).
     columns:
       - name: id_gare
         tests:
@@ -27,6 +20,54 @@ models:
           - accepted_values:
               arguments:
                 values: ["FR", "CH", "NL", "IT", "FI", "PL", "DE", "SE"]
+
+  - name: dim_stop_uic_ch
+    description: Résolution stop_id (format "sloid" inclus) -> code UIC pour la Suisse (Gold).
+    columns:
+      - name: stop_id
+        tests:
+          - not_null
+
+  - name: dim_route_label_ch
+    description: Libellé de ligne lisible par route_id pour la Suisse (Gold).
+
+  - name: dim_route_operator_ch
+    description: Opérateur par route_id pour la Suisse (Gold).
+
+  - name: dim_route_label_it
+    description: Libellé de ligne lisible par route_id pour l'Italie (Gold).
+
+  - name: dim_trip_label_nl
+    description: Libellé de ligne lisible par trip_id pour les Pays-Bas (Gold).
+
+  - name: dim_route_operator_nl
+    description: Opérateur par route_id pour les Pays-Bas (Gold).
+
+  - name: dim_trip_shape_nl
+    description: trip_id -> shape_id (tracé réel), Pays-Bas uniquement (Gold).
+
+  - name: dim_shapes_nl
+    description: >
+      Points des tracés réels néerlandais, un row par point (format long, jamais chargé en bloc
+      côté API — cf. apps/api/main.py, _nl_shape_for_trip).
+    columns:
+      - name: shape_id
+        tests:
+          - not_null
+
+  - name: dim_rail_routes_ch
+    description: Allowlist de route_id ferroviaires suisses, pour apps/streaming/producer.py.
+
+  - name: dim_rail_trips_de
+    description: Allowlist de trip_id ferroviaires allemands, pour apps/streaming/producer.py.
+
+  - name: dim_rail_trips_se
+    description: Allowlist de trip_id ferroviaires suédois, pour apps/streaming/producer.py.
+
+  - name: dim_stop_sequence_pl
+    description: >
+      Résolution (trip_id, stop_sequence) -> stop_id + horaire théorique, pour
+      apps/streaming/producer.py (flux temps réel polonais).
 
   - name: fact_regularite
     description: Ponctualité/annulations harmonisées TGV/TER/Intercités (Gold).

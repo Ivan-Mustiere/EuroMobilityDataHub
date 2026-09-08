@@ -31,10 +31,11 @@ from dotenv import load_dotenv
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 RAW_DIR = ROOT / "data" / "raw"
 
-# Partitionnement "opérateur / type de donnée / date" (Bloc 1, partie 3.4/a). (opérateur,
-# catégorie) plutôt qu'une catégorie seule : dim_stations_multipays.csv (apps/pipeline/
-# transform.py, export_dim_stations_multipays) n'est pas une donnée SNCF, contrairement à tout le
-# reste ici — préfixe S3 "gtfs-international" dédié, pas de mélange dans "sncf/".
+# Partitionnement "opérateur / type de donnée / date" (Bloc 1, partie 3.4/a). Les fichiers gtfs-*
+# sont les membres bruts extraits des archives GTFS par apps/pipeline/ingest.py (extract()) — la
+# harmonisation (dédoublonnage, filtre rail, jointures route/agence...) n'a plus lieu en local
+# (DuckDB) mais directement en dbt sur ces fichiers une fois en Bronze/Silver (cf.
+# dbt/models/marts/dim_stations_multipays.sql et les modèles CH/NL/IT dédiés).
 CATEGORIES = {
     "regularite_tgv.csv": ("sncf", "regularite"),
     "regularite_ter.csv": ("sncf", "regularite"),
@@ -42,7 +43,25 @@ CATEGORIES = {
     "gares.csv": ("sncf", "referentiel"),
     "tarifs_tgv_ouigo.csv": ("sncf", "tarifs"),
     "tarifs_intercites.csv": ("sncf", "tarifs"),
-    "dim_stations_multipays.csv": ("gtfs-international", "referentiel"),
+    "ch_stops.csv": ("gtfs-ch", "referentiel"),
+    "ch_routes.csv": ("gtfs-ch", "referentiel"),
+    "ch_agency.csv": ("gtfs-ch", "referentiel"),
+    "nl_stops.csv": ("gtfs-nl", "referentiel"),
+    "nl_routes.csv": ("gtfs-nl", "referentiel"),
+    "nl_trips.csv": ("gtfs-nl", "referentiel"),
+    "nl_shapes.csv": ("gtfs-nl", "referentiel"),
+    "nl_agency.csv": ("gtfs-nl", "referentiel"),
+    "it_stops.csv": ("gtfs-it", "referentiel"),
+    "it_routes.csv": ("gtfs-it", "referentiel"),
+    "pl_stops.csv": ("gtfs-pl", "referentiel"),
+    "pl_stop_times.csv": ("gtfs-pl", "referentiel"),
+    "de_stops.csv": ("gtfs-de", "referentiel"),
+    "de_routes.csv": ("gtfs-de", "referentiel"),
+    "de_trips.csv": ("gtfs-de", "referentiel"),
+    "se_stops.csv": ("gtfs-se", "referentiel"),
+    "se_routes.csv": ("gtfs-se", "referentiel"),
+    "se_trips.csv": ("gtfs-se", "referentiel"),
+    "fi_stations.csv": ("gtfs-fi", "referentiel"),
 }
 
 
@@ -99,6 +118,16 @@ def snowflake_connect():
     )
 
 
+def _file_format_for(filename: str) -> str:
+    # SNCF_CSV (point-virgule, cf. infra/terraform/snowflake.tf) pour les exports data.gouv.fr ;
+    # GTFS_CSV (virgule, format standard GTFS) pour tout le reste — les fichiers membres bruts
+    # extraits des archives GTFS par apps/pipeline/ingest.py (extract()) ne sont jamais au format
+    # SNCF, contrairement à ce que ce module chargeait jusqu'ici (uniquement du SNCF + un export
+    # DuckDB déjà mis au format SNCF_CSV pour l'occasion).
+    operateur, _category = CATEGORIES[filename]
+    return "SNCF_CSV" if operateur == "sncf" else "GTFS_CSV"
+
+
 def copy_into_staging(keys: dict[str, str]) -> None:
     conn = snowflake_connect()
     try:
@@ -106,7 +135,8 @@ def copy_into_staging(keys: dict[str, str]) -> None:
         for filename, key in keys.items():
             table = table_name_for(filename)
             stage_path = f"@BRONZE_STAGE/{key}"
-            print(f"[load_cloud] infère/recrée STAGING.{table} depuis {stage_path}")
+            file_format = _file_format_for(filename)
+            print(f"[load_cloud] infère/recrée STAGING.{table} depuis {stage_path} ({file_format})")
             # CREATE OR REPLACE (pas IF NOT EXISTS) : rejoue proprement à chaque exécution, comme
             # transform.py (CREATE OR REPLACE TABLE partout). Nécessaire ici en plus : le bucket
             # bronze est versionné (s3.tf), donc réexécuter le pipeline le même jour crée une
@@ -118,7 +148,7 @@ def copy_into_staging(keys: dict[str, str]) -> None:
                 USING TEMPLATE (
                     SELECT ARRAY_AGG(OBJECT_CONSTRUCT(*))
                     FROM TABLE(
-                        INFER_SCHEMA(LOCATION => '{stage_path}', FILE_FORMAT => 'SNCF_CSV')
+                        INFER_SCHEMA(LOCATION => '{stage_path}', FILE_FORMAT => '{file_format}')
                     )
                 )
                 """
@@ -128,7 +158,7 @@ def copy_into_staging(keys: dict[str, str]) -> None:
                 f"""
                 COPY INTO STAGING.{table}
                 FROM {stage_path}
-                FILE_FORMAT = (FORMAT_NAME = 'SNCF_CSV')
+                FILE_FORMAT = (FORMAT_NAME = '{file_format}')
                 MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
                 """
             )

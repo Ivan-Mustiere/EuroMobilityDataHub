@@ -4,7 +4,10 @@ sources:
   - name: staging
     description: >
       Couche Silver (Bloc 1, Tableau 5) : tables STAGING chargées par apps/pipeline/load_cloud.py via
-      COPY INTO avec inférence de schéma — colonnes brutes, noms français d'origine conservés.
+      COPY INTO avec inférence de schéma — colonnes brutes, noms français ou GTFS d'origine
+      conservés. Les tables gtfs_* sont les fichiers membres bruts des archives GTFS de chaque pays
+      (extraits par apps/pipeline/ingest.py:extract(), jamais transformés en local — la
+      harmonisation vit dans dbt/models/marts/, pas dans DuckDB).
     schema: STAGING
     tables:
       - name: regularite_tgv
@@ -15,5 +18,41 @@ sources:
         identifier: REGULARITE_INTERCITES
       - name: gares
         identifier: GARES
-      - name: dim_stations_multipays
-        identifier: DIM_STATIONS_MULTIPAYS
+      - name: ch_stops
+        identifier: CH_STOPS
+      - name: ch_routes
+        identifier: CH_ROUTES
+      - name: ch_agency
+        identifier: CH_AGENCY
+      - name: nl_stops
+        identifier: NL_STOPS
+      - name: nl_routes
+        identifier: NL_ROUTES
+      - name: nl_trips
+        identifier: NL_TRIPS
+      - name: nl_shapes
+        identifier: NL_SHAPES
+      - name: nl_agency
+        identifier: NL_AGENCY
+      - name: it_stops
+        identifier: IT_STOPS
+      - name: it_routes
+        identifier: IT_ROUTES
+      - name: pl_stops
+        identifier: PL_STOPS
+      - name: pl_stop_times
+        identifier: PL_STOP_TIMES
+      - name: de_stops
+        identifier: DE_STOPS
+      - name: de_routes
+        identifier: DE_ROUTES
+      - name: de_trips
+        identifier: DE_TRIPS
+      - name: se_stops
+        identifier: SE_STOPS
+      - name: se_routes
+        identifier: SE_ROUTES
+      - name: se_trips
+        identifier: SE_TRIPS
+      - name: fi_stations
+        identifier: FI_STATIONS

@@ -333,7 +333,8 @@ _STATIONS_BY_UIC_CACHE_TTL_S = 3600  # référentiel batch (rebuild hebdomadaire
 
 
 def _stations_by_uic() -> dict[str, dict]:
-    """"pays:code_uic" -> {nom_gare, latitude, longitude}, à partir de dim_stations (DuckDB).
+    """"pays:code_uic" -> {nom_gare, latitude, longitude}, à partir de MART.dim_stations_multipays
+    (Snowflake, cf. dbt/models/marts/).
 
     Le flux temps réel ne connaît que des stop_id GTFS-RT ; on en extrait le code UIC (7-8 chiffres
     en fin d'identifiant, ex. 'StopPoint:OCETGV INOUI-87688887' -> '87688887') pour le rapprocher du
@@ -342,20 +343,20 @@ def _stations_by_uic() -> dict[str, dict]:
 
     Clé préfixée par le pays (pas juste `code_uic`) : plusieurs pays résolvent leur stop_id par
     identité (Italie/Finlande/Pologne/Allemagne, cf. _uic_from_stop_id) et leurs codes se
-    chevauchent largement — sans ce préfixe, dim_stations contiendrait plusieurs lignes pour un
-    même `code_uic` et ce dict ne garderait arbitrairement que la dernière (bug constaté : trains
-    finlandais affichés avec des gares allemandes, l'Allemagne étant chargée en dernier).
+    chevauchent largement — sans ce préfixe, dim_stations_multipays contiendrait plusieurs lignes
+    pour un même `code_uic` et ce dict ne garderait arbitrairement que la dernière (bug constaté :
+    trains finlandais affichés avec des gares allemandes, l'Allemagne étant chargée en dernier).
 
-    Mis en cache en mémoire (comme _ch_stop_uic_map et consorts) : dim_stations dépasse maintenant
-    800 000 lignes (Allemagne comprise) — la reconstruire à chaque requête /realtime/trains
-    (sondée toutes les 15s) serait inutilement coûteux pour un référentiel qui ne change qu'au
-    rebuild hebdomadaire du pipeline batch.
+    Mis en cache en mémoire (comme _ch_stop_uic_map et consorts) : dim_stations_multipays dépasse
+    maintenant 800 000 lignes (Allemagne comprise) — la reconstruire à chaque requête
+    /realtime/trains (sondée toutes les 15s) serait inutilement coûteux pour un référentiel qui ne
+    change qu'au rebuild hebdomadaire du pipeline batch.
     """
     if time.time() - _stations_by_uic_cache["fetched_at"] > _STATIONS_BY_UIC_CACHE_TTL_S:
         con = get_connection()
         try:
             rows = con.execute(
-                "SELECT pays, code_uic, nom_gare, latitude, longitude FROM dim_stations "
+                "SELECT pays, code_uic, nom_gare, latitude, longitude FROM dim_stations_multipays "
                 "WHERE code_uic IS NOT NULL AND latitude IS NOT NULL AND longitude IS NOT NULL"
             ).fetchall()
         finally:
@@ -417,12 +418,11 @@ def _uic_from_stop_id(stop_id: str, pays: str) -> Optional[str]:
         uic = _ch_stop_uic_map().get(stop_id)
         return f"CH:{uic}" if uic else None
     # Italie, Finlande, Pologne, Allemagne, Suède : pas de code UIC séparé, le stop_id EST déjà la
-    # clé (identité, cf. build_it_reference/build_fi_reference/build_pl_reference/
-    # build_de_reference/build_se_reference) — pas besoin de charger une deuxième copie du
-    # référentiel de ces pays en mémoire pour vérifier ça, dim_stations (_stations_by_uic) la
-    # contient déjà. Économise ~870k entrées dupliquées en RAM (Allemagne + Suède, les deux plus
-    # gros référentiels étrangers) : cause d'un OOM constaté en prod une fois les 8 pays chargés
-    # simultanément sur l'instance EC2 (8 Go RAM, uvicorn seul montait à ~3,8 Go).
+    # clé (identité, cf. dbt/models/marts/dim_stations_multipays.sql) — pas besoin de charger une
+    # deuxième copie du référentiel de ces pays en mémoire pour vérifier ça, dim_stations_multipays
+    # (_stations_by_uic) la contient déjà. Économise ~870k entrées dupliquées en RAM (Allemagne +
+    # Suède, les deux plus gros référentiels étrangers) : cause d'un OOM constaté en prod une fois
+    # les 8 pays chargés simultanément sur l'instance EC2 (8 Go RAM, uvicorn seul montait à ~3,8 Go).
     if pays not in ("IT", "FI", "PL", "DE", "SE"):
         return None
     key = f"{pays}:{stop_id}"
@@ -431,34 +431,35 @@ def _uic_from_stop_id(stop_id: str, pays: str) -> Optional[str]:
 
 def _nl_shape_for_trip(trip_id: str) -> Optional[list[list[float]]]:
     """Tracé réel de la voie ([lat, lon] ordonnés) d'UN SEUL trajet néerlandais, interrogé à la
-    demande (dim_trip_shape_nl/dim_shapes_nl, apps/pipeline/transform.py, build_nl_reference), pour
-    dessiner le trajet du train sélectionné en suivant la géométrie réelle plutôt que des segments
-    droits entre gares. Ne couvre que les ~91% de trains dont le trip_id temps réel correspond
-    exactement à celui du GTFS statique (cf. limite documentée dans build_nl_reference).
+    demande (dim_trip_shape_nl/dim_shapes_nl, cf. dbt/models/marts/), pour dessiner le trajet du
+    train sélectionné en suivant la géométrie réelle plutôt que des segments droits entre gares.
+    Ne couvre que les ~91% de trains dont le trip_id temps réel correspond exactement à celui du
+    GTFS statique (limite documentée dans dbt/models/marts/dim_trip_shape_nl.sql).
 
-    Pas de cache pleine table ici (contrairement aux autres référentiels batch de ce module) :
-    dim_shapes_nl contient 26 432 tracés pour 17,8 millions de points au total (~3,4 Go si chargée
-    intégralement en dict Python) alors qu'au plus UN SEUL trajet est affiché à la fois sur la
-    carte (`detail_trip_id`) — cause d'un OOM constaté en prod une fois les 8 pays chargés
-    simultanément sur l'instance EC2. Un point de départ/arrivée manqué par erreur d'un TTL de
-    cache n'a aucun sens ici : chaque appel cible déjà exactement le trajet demandé."""
+    dim_shapes_nl est au format long côté Gold (un row par point, 6,5M au total, ~3,4 Go si
+    chargée intégralement en dict Python) — jamais de cache pleine table ici (contrairement aux
+    autres référentiels batch de ce module) : au plus UN SEUL trajet est affiché à la fois sur la
+    carte (`detail_trip_id`), cause d'un OOM constaté en prod une fois les 8 pays chargés
+    simultanément sur l'instance EC2. Chaque appel cible déjà exactement le trajet demandé, pas
+    besoin de cache/TTL."""
     con = get_connection()
     try:
-        row = con.execute("""
-            SELECT s.points
+        rows = con.execute("""
+            SELECT s.latitude, s.longitude
             FROM dim_trip_shape_nl ts
             JOIN dim_shapes_nl s ON s.shape_id = ts.shape_id
             WHERE ts.trip_id = ?
-        """, [trip_id]).fetchone()
+            ORDER BY s.shape_pt_sequence
+        """, [trip_id]).fetchall()
     except Exception:  # noqa: BLE001 - table Gold pas encore construite (migration en cours) ou
         # indisponible : dégradation gracieuse (référentiel vide), jamais une 500 sur l'endpoint
         # appelant. Volontairement large plutôt que snowflake.connector.errors.ProgrammingError
         # seul : les tests utilisent DuckDB comme double léger de Snowflake (même interface,
         # exceptions différentes, cf. tests/test_api.py) et doivent dégrader pareil.
-        row = None  # référentiel néerlandais pas encore construit dans cet environnement
+        rows = []
     finally:
         con.close()
-    return row[0] if row else None
+    return [[lat, lon] for lat, lon in rows] if rows else None
 
 
 def _split_shape_at_position(shape_points: list[list[float]], latitude: float, longitude: float):
