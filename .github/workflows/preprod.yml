@@ -26,4 +26,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run pipeline (preprod, jeu de données complet)
+        env:
+          # Référentiel statique suédois (apps/pipeline/ingest.py, build_se_reference) : sans elle,
+          # ce step ignore juste la Suède (non bloquant), cf. le message [ingest] correspondant.
+          SE_GTFS_STATIC_KEY: ${{ secrets.SE_GTFS_STATIC_KEY }}
         run: python apps/pipeline/run.py --env preprod
