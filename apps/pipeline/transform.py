@@ -391,7 +391,9 @@ def build_it_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = 
     Le plus simple des trois référentiels étrangers : ~20 gares seulement, un seul opérateur
     (Trenitalia), stop_id déjà directement exploitable (pas de format "sloid" comme la Suisse) —
     mais trop court (5 chiffres) pour la regex UIC existante (_STOP_ID_UIC_RE, 7-8 chiffres,
-    apps/api/main.py) : dim_stop_uic_it fournit quand même la résolution, par simple identité.
+    apps/api/main.py) : résolu par identité directement sur dim_stations (_uic_from_stop_id, pas
+    de table dim_stop_uic_it séparée — dupliquerait ce référentiel en mémoire pour rien, cf. le
+    même choix pour l'Allemagne/la Suède plus bas).
 
     Si `gtfs_zip` est absent, ne fait rien (pas d'échec bloquant : ajout, pas un prérequis).
     """
@@ -422,11 +424,6 @@ def build_it_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = 
         WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
     """)
     con.execute(f"""
-        CREATE OR REPLACE TABLE dim_stop_uic_it AS
-        SELECT stop_id, stop_id AS code_uic
-        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
-    """)
-    con.execute(f"""
         CREATE OR REPLACE TABLE dim_route_label_it AS
         SELECT route_id, route_short_name AS label
         FROM read_csv('{routes_csv.as_posix()}', header=true, types={{'route_id': 'VARCHAR'}})
@@ -441,7 +438,8 @@ def build_fi_reference(con: duckdb.DuckDBPyConnection, stations_json: pathlib.Pa
     tous types confondus — pas de distinction rail/route ici, Digitraffic ne couvre que le rail).
     `stationUICCode` (identifiant interne finlandais, pas un vrai code UIC international malgré le
     nom) sert de code_uic, trop court pour la regex existante (_STOP_ID_UIC_RE, apps/api/main.py) :
-    dim_stop_uic_fi fournit la résolution par identité, comme pour l'Italie.
+    résolu par identité directement sur dim_stations, comme pour l'Italie (pas de table
+    dim_stop_uic_fi séparée, cf. build_it_reference).
 
     `countryCode = 'FI'` : le JSON Digitraffic contient aussi quelques gares frontalières
     étrangères (10 russes, 1 suédoise, vérifié) — sans ce filtre, deux gares distinctes peuvent
@@ -469,12 +467,6 @@ def build_fi_reference(con: duckdb.DuckDBPyConnection, stations_json: pathlib.Pa
         FROM read_json_auto('{stations_json.as_posix()}')
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL AND countryCode = 'FI'
     """)
-    con.execute(f"""
-        CREATE OR REPLACE TABLE dim_stop_uic_fi AS
-        SELECT CAST(stationUICCode AS VARCHAR) AS stop_id, CAST(stationUICCode AS VARCHAR) AS code_uic
-        FROM read_json_auto('{stations_json.as_posix()}')
-        WHERE countryCode = 'FI'
-    """)
 
 
 def build_pl_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = PL_GTFS_ZIP) -> None:
@@ -487,8 +479,9 @@ def build_pl_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = 
     (STOP_SEQUENCE_MAP_FILE), plutôt que de le faire à la volée dans l'API — même principe que
     ch_rail_routes.txt pour la Suisse.
 
-    stop_id polonais (ex. "10009_RAIL_1_105") n'est pas un vrai code UIC : dim_stop_uic_pl le
-    fournit par identité, comme pour l'Italie/la Finlande. Limite acceptée : plusieurs variantes
+    stop_id polonais (ex. "10009_RAIL_1_105") n'est pas un vrai code UIC : résolu par identité
+    directement sur dim_stations, comme pour l'Italie/la Finlande (pas de table dim_stop_uic_pl
+    séparée, cf. build_it_reference). Limite acceptée : plusieurs variantes
     de stop_id (quai, "_FALLBACK"...) pour une même gare physique apparaissent comme des gares
     distinctes dans dim_stations (mêmes coordonnées, pas d'incohérence, juste redondant).
 
@@ -520,12 +513,6 @@ def build_pl_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = 
         FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
         WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
     """)
-    con.execute(f"""
-        CREATE OR REPLACE TABLE dim_stop_uic_pl AS
-        SELECT stop_id, stop_id AS code_uic
-        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
-    """)
-
     # arrival_seconds/departure_seconds : heure théorique en secondes depuis minuit (peut dépasser
     # 86400 pour un trajet après minuit, convention GTFS standard "HH:MM:SS" avec HH >= 24) — sert
     # à calculer le retard nous-mêmes (apps/streaming/producer.py), le flux temps réel polonais ne
@@ -555,9 +542,10 @@ def build_de_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = 
     filtré ici sur route_type='2' (Rail — vocabulaire GTFS de base, pas la variante étendue
     européenne utilisée par la Suisse). Contrairement à la Suisse, heures absolues publiées à
     100 % (vérifié) et stop_id déjà directement présent dans le flux — mais pas de shapes.txt
-    (comme la Suisse, contrairement aux Pays-Bas/Pologne) et pas de code UIC séparé : dim_stop_uic_de
-    fournit la résolution par identité (stop_id allemand trop court/non numérique pour la regex
-    existante, ex. "661713" à 6 chiffres).
+    (comme la Suisse, contrairement aux Pays-Bas/Pologne) et pas de code UIC séparé : résolu par
+    identité directement sur dim_stations (stop_id allemand trop court/non numérique pour la regex
+    existante, ex. "661713" à 6 chiffres) — pas de table dim_stop_uic_de séparée (cf.
+    build_it_reference) : dupliquerait ~690k lignes en mémoire pour rien côté API.
 
     Ne charge ni ne télécharge stop_times.txt (2,17 Go, inutile ici — le filtre rail ne dépend que
     de trips.txt + routes.txt).
@@ -591,12 +579,6 @@ def build_de_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = 
         FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
         WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
     """)
-    con.execute(f"""
-        CREATE OR REPLACE TABLE dim_stop_uic_de AS
-        SELECT stop_id, stop_id AS code_uic
-        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
-    """)
-
     # Filtre par trip_id, pas par route_id : le flux temps réel allemand ne publie jamais de
     # route_id (0/88101 testés), contrairement à la Suisse — d'où RAIL_TRIPS_FILE plutôt que
     # RAIL_ROUTES_FILE (cf. apps/streaming/producer.py).
@@ -634,8 +616,10 @@ def build_se_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = 
     (même limite acceptée que build_de_reference : /stations exposera aussi des arrêts non
     ferroviaires suédois). stop_id au format NeTEx suédois (16 chiffres, ex.
     "9022050025317002") : trop long pour la regex UIC existante (_STOP_ID_UIC_RE, apps/api/
-    main.py) -> dim_stop_uic_se résout par identité, comme l'Italie/la Finlande/la Pologne/
-    l'Allemagne.
+    main.py) -> résolu par identité directement sur dim_stations, comme l'Italie/la Finlande/la
+    Pologne/l'Allemagne (pas de table dim_stop_uic_se séparée, cf. build_it_reference : le
+    référentiel suédois est le deuxième plus gros après l'Allemagne, même raison de ne pas le
+    dupliquer en mémoire côté API).
 
     Ne charge ni ne télécharge stop_times.txt (693 Mo) ni shapes.txt (2,4 Go), inutiles ici — même
     principe que build_de_reference.
@@ -669,12 +653,6 @@ def build_se_reference(con: duckdb.DuckDBPyConnection, gtfs_zip: pathlib.Path = 
         FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
         WHERE stop_lat IS NOT NULL AND stop_lon IS NOT NULL
     """)
-    con.execute(f"""
-        CREATE OR REPLACE TABLE dim_stop_uic_se AS
-        SELECT stop_id, stop_id AS code_uic
-        FROM read_csv('{stops_csv.as_posix()}', header=true, types={{'stop_id': 'VARCHAR'}})
-    """)
-
     rail_route_types = ",".join(str(t) for t in sorted(CH_RAIL_ROUTE_TYPES))
     rail_trip_ids = con.execute(f"""
         SELECT t.trip_id

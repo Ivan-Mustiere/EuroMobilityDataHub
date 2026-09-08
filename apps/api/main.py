@@ -336,47 +336,45 @@ def _uic_from_stop_id(stop_id: str, pays: str) -> Optional[str]:
             return None
         uic = _ch_stop_uic_map().get(stop_id)
         return f"CH:{uic}" if uic else None
-    # Italie, Finlande, Pologne, Allemagne, Suède : pas de code UIC, résolution par identité sur
-    # leur propre référentiel (cf. build_it_reference/build_fi_reference/build_pl_reference/
-    # build_de_reference/build_se_reference) — jamais mélangée avec un autre pays.
-    resolver = {
-        "IT": _it_stop_uic_map,
-        "FI": _fi_stop_uic_map,
-        "PL": _pl_stop_uic_map,
-        "DE": _de_stop_uic_map,
-        "SE": _se_stop_uic_map,
-    }.get(pays)
-    if resolver is None:
+    # Italie, Finlande, Pologne, Allemagne, Suède : pas de code UIC séparé, le stop_id EST déjà la
+    # clé (identité, cf. build_it_reference/build_fi_reference/build_pl_reference/
+    # build_de_reference/build_se_reference) — pas besoin de charger une deuxième copie du
+    # référentiel de ces pays en mémoire pour vérifier ça, dim_stations (_stations_by_uic) la
+    # contient déjà. Économise ~870k entrées dupliquées en RAM (Allemagne + Suède, les deux plus
+    # gros référentiels étrangers) : cause d'un OOM constaté en prod une fois les 8 pays chargés
+    # simultanément sur l'instance EC2 (8 Go RAM, uvicorn seul montait à ~3,8 Go).
+    if pays not in ("IT", "FI", "PL", "DE", "SE"):
         return None
-    uic = resolver().get(stop_id)
-    return f"{pays}:{uic}" if uic else None
+    key = f"{pays}:{stop_id}"
+    return key if key in _stations_by_uic() else None
 
 
-_nl_shapes_cache = {"fetched_at": 0.0, "by_trip_id": {}}
-_NL_SHAPES_CACHE_TTL_S = 3600  # référentiel batch (rebuild hebdomadaire), pas besoin d'un TTL court
+def _nl_shape_for_trip(trip_id: str) -> Optional[list[list[float]]]:
+    """Tracé réel de la voie ([lat, lon] ordonnés) d'UN SEUL trajet néerlandais, interrogé à la
+    demande (dim_trip_shape_nl/dim_shapes_nl, apps/pipeline/transform.py, build_nl_reference), pour
+    dessiner le trajet du train sélectionné en suivant la géométrie réelle plutôt que des segments
+    droits entre gares. Ne couvre que les ~91% de trains dont le trip_id temps réel correspond
+    exactement à celui du GTFS statique (cf. limite documentée dans build_nl_reference).
 
-
-def _nl_shapes_map() -> dict[str, list[list[float]]]:
-    """trip_id (temps réel) -> tracé réel de la voie ([lat, lon] ordonnés), pour dessiner le
-    trajet d'un train néerlandais sélectionné en suivant la géométrie réelle plutôt que des
-    segments droits entre gares (dim_trip_shape_nl/dim_shapes_nl, apps/pipeline/transform.py,
-    build_nl_reference). Ne couvre que les ~91% de trains dont le trip_id temps réel correspond
-    exactement à celui du GTFS statique (cf. limite documentée dans build_nl_reference)."""
-    if time.time() - _nl_shapes_cache["fetched_at"] > _NL_SHAPES_CACHE_TTL_S:
-        con = get_connection()
-        try:
-            rows = con.execute("""
-                SELECT ts.trip_id, s.points
-                FROM dim_trip_shape_nl ts
-                JOIN dim_shapes_nl s ON s.shape_id = ts.shape_id
-            """).fetchall()
-        except duckdb.CatalogException:
-            rows = []  # référentiel néerlandais pas encore construit dans cet environnement
-        finally:
-            con.close()
-        _nl_shapes_cache["by_trip_id"] = dict(rows)
-        _nl_shapes_cache["fetched_at"] = time.time()
-    return _nl_shapes_cache["by_trip_id"]
+    Pas de cache pleine table ici (contrairement aux autres référentiels batch de ce module) :
+    dim_shapes_nl contient 26 432 tracés pour 17,8 millions de points au total (~3,4 Go si chargée
+    intégralement en dict Python) alors qu'au plus UN SEUL trajet est affiché à la fois sur la
+    carte (`detail_trip_id`) — cause d'un OOM constaté en prod une fois les 8 pays chargés
+    simultanément sur l'instance EC2. Un point de départ/arrivée manqué par erreur d'un TTL de
+    cache n'a aucun sens ici : chaque appel cible déjà exactement le trajet demandé."""
+    con = get_connection()
+    try:
+        row = con.execute("""
+            SELECT s.points
+            FROM dim_trip_shape_nl ts
+            JOIN dim_shapes_nl s ON s.shape_id = ts.shape_id
+            WHERE ts.trip_id = ?
+        """, [trip_id]).fetchone()
+    except duckdb.CatalogException:
+        row = None  # référentiel néerlandais pas encore construit dans cet environnement
+    finally:
+        con.close()
+    return row[0] if row else None
 
 
 def _split_shape_at_position(shape_points: list[list[float]], latitude: float, longitude: float):
@@ -391,14 +389,19 @@ def _split_shape_at_position(shape_points: list[list[float]], latitude: float, l
     return shape_points[: nearest_index + 1], shape_points[nearest_index:]
 
 
+_MAP_LOADER_CACHE_TTL_S = 3600  # référentiel batch (rebuild hebdomadaire), pas besoin d'un TTL court
+
+
 def _make_cached_map_loader(table: str, columns: str):
     """Fabrique un chargeur de dict {colonne1 -> colonne2} depuis une table DuckDB batch (référentiel
-    hebdomadaire), mis en cache en mémoire — même TTL/logique que _ch_stop_uic_map et
-    _nl_shapes_map, factorisé pour les libellés de ligne CH/NL ci-dessous."""
+    hebdomadaire), mis en cache en mémoire — même TTL/logique que _ch_stop_uic_map, factorisé pour
+    les libellés de ligne CH/NL ci-dessous. Réservé aux petites tables (labels/opérateurs par
+    route_id/trip_id) : jamais utilisé pour dim_shapes_nl (cf. _nl_shape_for_trip, pas de
+    préchargement pleine table pour celle-là — trop volumineuse)."""
     cache = {"fetched_at": 0.0, "map": {}}
 
     def load() -> dict:
-        if time.time() - cache["fetched_at"] > _NL_SHAPES_CACHE_TTL_S:
+        if time.time() - cache["fetched_at"] > _MAP_LOADER_CACHE_TTL_S:
             con = get_connection()
             try:
                 rows = con.execute(f"SELECT {columns} FROM {table}").fetchall()
@@ -428,14 +431,6 @@ _it_route_label_map = _make_cached_map_loader("dim_route_label_it", "route_id, l
 # affiché doit rester "Trenitalia" et non "SNCF" : gérée comme la Suisse/les Pays-Bas.
 _ch_route_operator_map = _make_cached_map_loader("dim_route_operator_ch", "route_id, operateur")
 _nl_route_operator_map = _make_cached_map_loader("dim_route_operator_nl", "route_id, operateur")
-
-# Résolution stop_id -> code UIC pour l'Italie (Trenitalia France) et la Finlande : cf.
-# commentaire dans _uic_from_stop_id ci-dessus.
-_it_stop_uic_map = _make_cached_map_loader("dim_stop_uic_it", "stop_id, code_uic")
-_fi_stop_uic_map = _make_cached_map_loader("dim_stop_uic_fi", "stop_id, code_uic")
-_pl_stop_uic_map = _make_cached_map_loader("dim_stop_uic_pl", "stop_id, code_uic")
-_de_stop_uic_map = _make_cached_map_loader("dim_stop_uic_de", "stop_id, code_uic")
-_se_stop_uic_map = _make_cached_map_loader("dim_stop_uic_se", "stop_id, code_uic")
 
 
 def _train_number_from_trip_id(trip_id: str) -> Optional[str]:
@@ -821,7 +816,9 @@ def realtime_trains(
     stations = _stations_by_uic()
     disruptions_fr = _active_disruptions_cached()
     alerts_ch = _ch_alerts_cached()
-    shapes_nl = _nl_shapes_map()
+    # Un seul trajet ciblé (pas de préchargement de la table complète, cf. _nl_shape_for_trip) :
+    # None si `detail_trip_id` n'est pas néerlandais ou absent, sans coût de requête inutile.
+    shape_points_nl = _nl_shape_for_trip(detail_trip_id) if detail_trip_id else None
     route_labels_ch = _ch_route_label_map()
     trip_labels_nl = _nl_trip_label_map()
     route_operators_ch = _ch_route_operator_map()
@@ -860,9 +857,9 @@ def realtime_trains(
             # de points côté Pays-Bas) pour des centaines de trains non sélectionnés.
             itineraire_restant, itineraire_parcouru = [], []
         else:
-            # Tracé réel de la voie (Pays-Bas seulement, ~91% des trains, cf. _nl_shapes_map)
+            # Tracé réel de la voie (Pays-Bas seulement, ~91% des trains, cf. _nl_shape_for_trip)
             # plutôt que des segments droits entre gares.
-            shape_points = shapes_nl.get(trip_id) if pays == "NL" else None
+            shape_points = shape_points_nl if pays == "NL" else None
             if shape_points:
                 itineraire_parcouru, itineraire_restant = _split_shape_at_position(shape_points, latitude, longitude)
             else:

@@ -159,20 +159,28 @@ def test_uic_from_stop_id_ch_sloid_fallback(monkeypatch):
 
 def test_uic_from_stop_id_no_cross_country_collision(monkeypatch):
     # Régression : l'Italie/la Finlande/la Pologne/l'Allemagne/la Suède résolvent leur stop_id par
-    # identité (pas de code UIC) et leurs plages numériques se chevauchent (ex. stop_id "1" existe
-    # à la fois en Finlande et en Allemagne) — sans le préfixe pays, un référentiel bâti après un
-    # autre écraserait silencieusement le bon résultat (bug constaté : trains finlandais affichés
-    # avec des gares allemandes, l'Allemagne étant chargée en dernier dans dim_stations).
-    monkeypatch.setattr(api_main, "_fi_stop_uic_map", lambda: {"1": "1"})
-    monkeypatch.setattr(api_main, "_de_stop_uic_map", lambda: {"1": "1"})
+    # identité (pas de code UIC, directement sur dim_stations via _stations_by_uic — pas de table
+    # dim_stop_uic_xx séparée, cf. _uic_from_stop_id) et leurs plages numériques se chevauchent
+    # (ex. stop_id "1" existe à la fois en Finlande et en Allemagne) — sans le préfixe pays, un
+    # référentiel bâti après un autre écraserait silencieusement le bon résultat (bug constaté :
+    # trains finlandais affichés avec des gares allemandes, l'Allemagne étant chargée en dernier).
+    monkeypatch.setitem(api_main._stations_by_uic_cache, "map", {
+        "FI:1": {"nom_gare": "Helsinki", "latitude": 60.17, "longitude": 24.94},
+        "DE:1": {"nom_gare": "Berlin", "latitude": 52.52, "longitude": 13.40},
+    })
+    monkeypatch.setitem(api_main._stations_by_uic_cache, "fetched_at", time.time())
     assert api_main._uic_from_stop_id("1", "FI") == "FI:1"
     assert api_main._uic_from_stop_id("1", "DE") == "DE:1"
 
 
 def test_uic_from_stop_id_se(monkeypatch):
     # Suède : résolution par identité comme l'Italie/la Finlande/la Pologne/l'Allemagne (stop_id au
-    # format NeTEx suédois, trop long pour la regex UIC — cf. build_se_reference).
-    monkeypatch.setattr(api_main, "_se_stop_uic_map", lambda: {"9022050025317002": "9022050025317002"})
+    # format NeTEx suédois, trop long pour la regex UIC — cf. build_se_reference), directement sur
+    # dim_stations (pas de table dim_stop_uic_se séparée, cf. _uic_from_stop_id).
+    monkeypatch.setitem(api_main._stations_by_uic_cache, "map", {
+        "SE:9022050025317002": {"nom_gare": "København Østerport", "latitude": 55.69, "longitude": 12.59},
+    })
+    monkeypatch.setitem(api_main._stations_by_uic_cache, "fetched_at", time.time())
     assert api_main._uic_from_stop_id("9022050025317002", "SE") == "SE:9022050025317002"
     assert api_main._uic_from_stop_id("inconnu", "SE") is None
 
