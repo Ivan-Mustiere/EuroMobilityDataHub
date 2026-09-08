@@ -53,6 +53,18 @@ aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_
     end' \
   > /opt/euromobilitydatahub/secrets/snowflake.env
 
+# Credentials Snowflake de l'API (SVC_API, rôle ANALYST — lecture seule MART, cf. secrets.tf) :
+# même encodage base64 de la clé privée que ci-dessus, pour la même raison.
+aws secretsmanager get-secret-value --region "${region}" --secret-id "${project_name}/svc-api-credentials" \
+  --query SecretString --output text | jq -r '
+    to_entries[] |
+    if .key == "SNOWFLAKE_PRIVATE_KEY" then
+      "SNOWFLAKE_PRIVATE_KEY_B64=" + (.value | @base64)
+    else
+      "\(.key)=\(.value)"
+    end' \
+  > /opt/euromobilitydatahub/secrets/svc_api.env
+
 # Le secret RDS utilise le format standard AWS (host/port/dbname/username/password, requis par la
 # Lambda de rotation, cf. secrets_rotation.tf) : reconstruit ici en PG*/majuscules pour l'init du
 # schéma ci-dessous et pour le mode "local-test" de consumer.py (cf. pg_conninfo()).
@@ -117,4 +129,5 @@ export FI_ENV_FILE=/opt/euromobilitydatahub/secrets/fi.env
 export PL_ENV_FILE=/opt/euromobilitydatahub/secrets/pl.env
 export SE_ENV_FILE=/opt/euromobilitydatahub/secrets/se.env
 export SE_STATIC_ENV_FILE=/opt/euromobilitydatahub/secrets/se_static.env
+export SVC_API_ENV_FILE=/opt/euromobilitydatahub/secrets/svc_api.env
 docker compose up -d --build

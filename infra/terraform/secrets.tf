@@ -24,6 +24,27 @@ resource "aws_secretsmanager_secret_version" "etl_cloud_credentials" {
   })
 }
 
+# Credentials Snowflake de l'API temps réel (SVC_API, rôle ANALYST — lecture seule MART, cf.
+# snowflake.tf) : secret distinct de etl-cloud-credentials ci-dessus (identité de service séparée,
+# même principe que etl_loader/analyst déjà séparés côté RBAC).
+resource "aws_secretsmanager_secret" "svc_api_credentials" {
+  name        = "${local.name_prefix}/svc-api-credentials"
+  description = "Credentials Snowflake (utilisateur de service SVC_API${local.env_suffix_sf}) pour l'API temps reel"
+}
+
+resource "aws_secretsmanager_secret_version" "svc_api_credentials" {
+  secret_id = aws_secretsmanager_secret.svc_api_credentials.id
+  secret_string = jsonencode({
+    SNOWFLAKE_ORGANIZATION_NAME = var.snowflake_organization_name
+    SNOWFLAKE_ACCOUNT_NAME      = var.snowflake_account_name
+    SNOWFLAKE_USER              = snowflake_service_user.api.name
+    SNOWFLAKE_ROLE              = snowflake_account_role.analyst.name
+    SNOWFLAKE_WAREHOUSE         = snowflake_warehouse.main.name
+    SNOWFLAKE_DATABASE          = snowflake_database.main.name
+    SNOWFLAKE_PRIVATE_KEY       = file(pathexpand("~/.ssh/snowflake_api_key${local.env_suffix}.p8"))
+  })
+}
+
 # Clé de l'API cloud (apps/api/main.py, require_api_key) : générée par Terraform plutôt que la clé de
 # dev en dur du docker-compose.yml racine — nécessaire depuis que l'API est réellement exposée
 # publiquement via la DMZ (dmz.tf), pas juste en local.

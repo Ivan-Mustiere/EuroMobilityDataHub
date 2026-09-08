@@ -1,22 +1,26 @@
 """API REST EuroMobilityDataHub — sert les données réelles produites par le pipeline.
 
-Lecture seule sur la base DuckDB de l'environnement APP_ENV (dev|preprod|prod).
-Lancer : uvicorn apps.api.main:app --reload --no-access-log
+Lecture seule sur Snowflake MART (utilisateur de service SVC_API, rôle ANALYST — cf.
+infra/terraform/snowflake.tf), plus Postgres pour le temps réel (fact_realtime, cf.
+get_pg_connection). Lancer : uvicorn apps.api.main:app --reload --no-access-log
 (--no-access-log : les access logs bruts d'uvicorn contiennent l'IP en clair, remplacés par notre
 propre log anonymisé ci-dessous — cf. politique RGPD décrite dans le Bloc 1, partie 5.1/5.2/d.)
 """
 
+import base64
 import json
 import logging
 import os
 import pathlib
 import re
+import threading
 import time
 from typing import Optional
 
-import duckdb
 import psycopg
 import requests
+import snowflake.connector
+from cryptography.hazmat.primitives import serialization
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +29,10 @@ from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+
+# Style de placeholder positionnel "?" (comme DuckDB, pas de réécriture des requêtes existantes
+# écrites avec ce style) plutôt que le "%s" par défaut du connecteur Snowflake.
+snowflake.connector.paramstyle = "qmark"
 
 load_dotenv()
 
@@ -57,11 +65,6 @@ _DISRUPTIONS_CACHE_TTL_S = 90
 # trip_id du flux GTFS-RT (pas de numéro de train à extraire comme pour la SNCF).
 CH_GTFS_SA_TOKEN = os.getenv("CH_GTFS_SA_TOKEN", "")
 _ch_alerts_cache = {"fetched_at": 0.0, "by_trip_id": {}}
-DB_PATHS = {
-    "dev": ROOT / "environments" / "dev" / "db_dev.duckdb",
-    "preprod": ROOT / "environments" / "preprod" / "db_preprod.duckdb",
-    "prod": ROOT / "environments" / "prod" / "db_prod.duckdb",
-}
 
 STATION_COLUMNS = ["station_id", "nom_gare", "trigramme", "code_uic", "latitude", "longitude"]
 REGULARITE_COLUMNS = [
@@ -197,11 +200,84 @@ def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-def get_connection() -> duckdb.DuckDBPyConnection:
-    db_path = DB_PATHS.get(APP_ENV)
-    if db_path is None or not db_path.exists():
-        raise HTTPException(status_code=503, detail=f"Base introuvable pour l'environnement '{APP_ENV}' ({db_path})")
-    return duckdb.connect(str(db_path), read_only=True)
+# --- Connexion Snowflake (MART) ---------------------------------------------------------------
+#
+# Une seule connexion persistante, réutilisée entre les requêtes (au lieu d'un duckdb.connect()
+# par appel sur un fichier local) : ouvrir une connexion Snowflake à chaque requête serait
+# beaucoup trop lent (handshake JWT réseau + réveil éventuel du warehouse, auto_suspend=60s côté
+# infra/terraform/snowflake.tf) pour un endpoint sondé toutes les 15-30s par la carte.
+
+_snowflake_conn: Optional["snowflake.connector.SnowflakeConnection"] = None
+_snowflake_conn_lock = threading.Lock()
+
+
+def _snowflake_private_key_der() -> bytes:
+    # Même logique que apps/pipeline/load_cloud.py::_load_private_key_pem/_private_key_der : le
+    # connecteur veut la clé au format DER/PKCS8, et SNOWFLAKE_PRIVATE_KEY_B64 (PEM encodé en
+    # base64 sur une ligne) est prioritaire — un env_file Docker ne supporte pas un saut de ligne
+    # dans une valeur (cf. infra/terraform/templates/ec2_user_data.sh.tftpl).
+    if "SNOWFLAKE_PRIVATE_KEY_B64" in os.environ:
+        pem_text = base64.b64decode(os.environ["SNOWFLAKE_PRIVATE_KEY_B64"]).decode()
+    else:
+        pem_text = os.environ["SNOWFLAKE_PRIVATE_KEY"]
+    key = serialization.load_pem_private_key(pem_text.encode(), password=None)
+    return key.private_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+
+def _connect_snowflake() -> "snowflake.connector.SnowflakeConnection":
+    try:
+        return snowflake.connector.connect(
+            user=os.environ["SNOWFLAKE_USER"],
+            account=f'{os.environ["SNOWFLAKE_ORGANIZATION_NAME"]}-{os.environ["SNOWFLAKE_ACCOUNT_NAME"]}',
+            private_key=_snowflake_private_key_der(),
+            role=os.getenv("SNOWFLAKE_ROLE", "ANALYST"),
+            warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "EUROMOBILITYDATAHUB_WH"),
+            database=os.getenv("SNOWFLAKE_DATABASE", "EUROMOBILITYDATAHUB"),
+            schema="MART",
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=503, detail=f"Configuration Snowflake manquante : {exc!r}")
+
+
+class _EagerResult:
+    """Résultat déjà entièrement récupéré (cf. get_connection ci-dessous : le fetch se fait sous
+    verrou, à l'intérieur de execute()) — .fetchall()/.fetchone() rejouent juste ces lignes, même
+    interface que ce que renvoyait duckdb.DuckDBPyConnection.execute(), aucun appelant à changer."""
+
+    def __init__(self, rows: list):
+        self._rows = rows
+
+    def fetchall(self) -> list:
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _ReusableSnowflakeConnection:
+    def execute(self, sql: str, params=None) -> _EagerResult:
+        global _snowflake_conn
+        with _snowflake_conn_lock:
+            if _snowflake_conn is None or _snowflake_conn.is_closed():
+                _snowflake_conn = _connect_snowflake()
+            cur = _snowflake_conn.cursor()
+            try:
+                cur.execute(sql, params or [])
+                rows = cur.fetchall()
+            finally:
+                cur.close()
+        return _EagerResult(rows)
+
+    def close(self) -> None:
+        pass  # connexion partagée et persistante : ne se ferme jamais après une requête individuelle
+
+
+def get_connection() -> _ReusableSnowflakeConnection:
+    return _ReusableSnowflakeConnection()
 
 
 def rows_to_dicts(rows: list, columns: list[str]) -> list[dict]:
@@ -307,7 +383,11 @@ def _ch_stop_uic_map() -> dict[str, str]:
         con = get_connection()
         try:
             rows = con.execute("SELECT stop_id, code_uic FROM dim_stop_uic_ch").fetchall()
-        except duckdb.CatalogException:
+        except Exception:  # noqa: BLE001 - table Gold pas encore construite (migration en cours) ou
+        # indisponible : dégradation gracieuse (référentiel vide), jamais une 500 sur l'endpoint
+        # appelant. Volontairement large plutôt que snowflake.connector.errors.ProgrammingError
+        # seul : les tests utilisent DuckDB comme double léger de Snowflake (même interface,
+        # exceptions différentes, cf. tests/test_api.py) et doivent dégrader pareil.
             rows = []  # référentiel suisse pas encore construit dans cet environnement
         finally:
             con.close()
@@ -370,7 +450,11 @@ def _nl_shape_for_trip(trip_id: str) -> Optional[list[list[float]]]:
             JOIN dim_shapes_nl s ON s.shape_id = ts.shape_id
             WHERE ts.trip_id = ?
         """, [trip_id]).fetchone()
-    except duckdb.CatalogException:
+    except Exception:  # noqa: BLE001 - table Gold pas encore construite (migration en cours) ou
+        # indisponible : dégradation gracieuse (référentiel vide), jamais une 500 sur l'endpoint
+        # appelant. Volontairement large plutôt que snowflake.connector.errors.ProgrammingError
+        # seul : les tests utilisent DuckDB comme double léger de Snowflake (même interface,
+        # exceptions différentes, cf. tests/test_api.py) et doivent dégrader pareil.
         row = None  # référentiel néerlandais pas encore construit dans cet environnement
     finally:
         con.close()
@@ -405,7 +489,11 @@ def _make_cached_map_loader(table: str, columns: str):
             con = get_connection()
             try:
                 rows = con.execute(f"SELECT {columns} FROM {table}").fetchall()
-            except duckdb.CatalogException:
+            except Exception:  # noqa: BLE001 - table Gold pas encore construite (migration en cours) ou
+        # indisponible : dégradation gracieuse (référentiel vide), jamais une 500 sur l'endpoint
+        # appelant. Volontairement large plutôt que snowflake.connector.errors.ProgrammingError
+        # seul : les tests utilisent DuckDB comme double léger de Snowflake (même interface,
+        # exceptions différentes, cf. tests/test_api.py) et doivent dégrader pareil.
                 rows = []  # référentiel pas encore construit dans cet environnement
             finally:
                 con.close()

@@ -213,6 +213,23 @@ resource "snowflake_grant_privileges_to_account_role" "analyst_mart_tables_selec
   }
 }
 
+# Utilisateur de service de l'API (apps/api/main.py) : rôle ANALYST (lecture seule MART), pas
+# ETL_LOADER — l'API ne fait que lire les tables Gold, elle n'a besoin ni de CREATE TABLE ni
+# d'accès à STAGING (principe de moindre privilège déjà établi ci-dessus pour ANALYST/ETL_LOADER).
+# Clé RSA dédiée, comme SVC_ETL_LOADER (cf. infra/README.md pour la génération).
+resource "snowflake_service_user" "api" {
+  name              = "SVC_API${local.env_suffix_sf}"
+  comment           = "Utilisateur de service de l'API temps reel (apps/api/main.py) - lecture seule MART"
+  default_role      = snowflake_account_role.analyst.name
+  default_warehouse = snowflake_warehouse.main.name
+  rsa_public_key    = trimspace(file(pathexpand("~/.ssh/snowflake_api_key${local.env_suffix}.pub.stripped")))
+}
+
+resource "snowflake_grant_account_role" "analyst_to_svc_api" {
+  role_name = snowflake_account_role.analyst.name
+  user_name = snowflake_service_user.api.name
+}
+
 # Couvre les tables que dbt créera plus tard dans MART, sans révision manuelle des GRANT à
 # chaque nouveau modèle dbt.
 resource "snowflake_grant_privileges_to_account_role" "analyst_mart_future_tables_select" {

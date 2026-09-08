@@ -13,6 +13,12 @@ FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
+    # apps/api/main.py interroge Snowflake MART en prod (get_connection() = connexion Snowflake
+    # persistante, cf. commentaire dans main.py) — inutilisable en test (réseau, coût, credentials
+    # réelles). On monkeypatch get_connection() pour renvoyer une connexion DuckDB locale à la
+    # place : même interface .execute(sql, params).fetchall()/.close(), et DuckDB comprend le SQL
+    # standard déjà utilisé par main.py sans traduction. DuckDB ici n'est qu'un double de test
+    # léger et jetable, jamais utilisé en production (cf. plan d'élimination de DuckDB).
     db_path = tmp_path / "test.duckdb"
     con = duckdb.connect(str(db_path))
     transform.build_harmonized_table(
@@ -24,7 +30,7 @@ def client(tmp_path, monkeypatch):
     transform.build_dim_stations(con, gares_csv=FIXTURES / "gares_sample.csv")
     con.close()
 
-    monkeypatch.setitem(api_main.DB_PATHS, "dev", db_path)
+    monkeypatch.setattr(api_main, "get_connection", lambda: duckdb.connect(str(db_path), read_only=True))
     monkeypatch.setattr(api_main, "APP_ENV", "dev")
     monkeypatch.setattr(api_main, "VALID_API_KEYS", {"test-key"})
     api_main.limiter.reset()
