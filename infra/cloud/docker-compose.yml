@@ -316,6 +316,13 @@ services:
       # Alerte email sur échec de tâche (Bloc 1, partie 5.2/d) via AWS SES, cf. pipeline_dag.py.
       ALERT_EMAIL: ${ALERT_EMAIL:-}
       AWS_REGION: ${AWS_REGION:-eu-west-3}
+      # Le mode "standalone" lance plusieurs workers gunicorn pour le webserver : sans clé fixe,
+      # chaque worker génère la sienne au démarrage, et la session/CSRF créée par l'un peut être
+      # rejetée par un autre — connexion "Invalid login" intermittente malgré des identifiants
+      # corrects (bug constaté en prod). Valeur non sensible (protège juste les sessions
+      # Airflow elles-mêmes, pas un secret métier) : committée directement, comme CLUSTER_ID
+      # ci-dessus pour Kafka.
+      AIRFLOW__WEBSERVER__SECRET_KEY: f58d4af2c08482aee90679e85865754050acdeda66b2bd873b7dce77400d
     # ${SNOWFLAKE_ENV_FILE} : idem RDS_ENV_FILE, positionné par le bootstrap EC2 en production.
     # ${SE_STATIC_ENV_FILE} : SE_GTFS_STATIC_KEY, lu par apps/pipeline/ingest.py (référentiel
     # suédois, cf. se_static.env) — exécuté ici via le DAG (pipeline_dag.py, tâche `ingest`).
