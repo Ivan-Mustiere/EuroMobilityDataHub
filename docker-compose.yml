@@ -30,8 +30,11 @@ services:
     entrypoint: ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]
     ports:
       - "8000:8000"
-    volumes:
-      - ./environments:/app/environments
+    # Credentials Snowflake (SVC_API, rôle ANALYST — lecture seule MART) : l'API lit Snowflake
+    # directement, plus de fichier DuckDB local (cf. infra/cloud/docker-compose.yml pour le
+    # même service côté stack AWS, qui utilise le même secret via Secrets Manager).
+    env_file:
+      - infra/cloud/local-test/svc_api.env
 
   # Chiffrement en transit (C1.4.2) : TLS terminé par Caddy (CA interne, pas de domaine requis
   # pour la démo). Accès : https://localhost:8443 (le navigateur avertit sur le certificat local,
