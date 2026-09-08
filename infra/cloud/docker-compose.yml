@@ -86,8 +86,11 @@ services:
     volumes:
       - ../../environments:/app/environments
     # ${API_ENV_FILE} : idem RDS_ENV_FILE/SNOWFLAKE_ENV_FILE, positionné par le bootstrap EC2.
+    # RDS_ENV_FILE (même variable que le service `consumer`) : l'endpoint /realtime/trains lit la
+    # même base Postgres que le consumer y écrit.
     env_file:
       - ${API_ENV_FILE:-./local-test/api.env}
+      - ${RDS_ENV_FILE:-./local-test/rds.env}
 
   airflow:
     # Image personnalisée (cf. ./airflow/Dockerfile) : PySpark (Bloc 1, partie 4.1) a besoin d'une

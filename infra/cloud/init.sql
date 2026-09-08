@@ -13,16 +13,18 @@ CREATE TABLE IF NOT EXISTS dim_stations (
     geom       GEOMETRY(Point, 4326)
 );
 
+-- `stops` : liste JSON ordonnée des arrêts restants du trajet au moment de la capture, chacun
+-- avec son horaire prédit (arrival_time/departure_time, epoch Unix) et son retard en secondes
+-- (arrival_delay/departure_delay) — cf. apps/streaming/producer.py. Sert à l'endpoint
+-- /realtime/trains (apps/api/main.py) pour interpoler une position entre deux gares, la SNCF ne
+-- publiant pas de position GPS par train (pas de flux GTFS-RT vehicle-positions).
 CREATE TABLE IF NOT EXISTS fact_realtime (
-    entity_id      TEXT PRIMARY KEY,
-    trip_id        TEXT NOT NULL,
+    trip_id        TEXT PRIMARY KEY,
     route_id       TEXT,
-    stop_id        TEXT,
-    delay_seconds  INTEGER,
+    stops          JSONB NOT NULL,
     feed_timestamp BIGINT,
     captured_at    TIMESTAMPTZ NOT NULL,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS fact_realtime_trip_id_idx ON fact_realtime (trip_id);
 CREATE INDEX IF NOT EXISTS fact_realtime_updated_at_idx ON fact_realtime (updated_at);

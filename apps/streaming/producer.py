@@ -3,6 +3,12 @@ message JSON sur un topic Kafka (Bloc 1, Tableau 5 — "Entrant : Kafka (GTFS-RT
 
 Source : proxy du Point d'Accès National (transport.data.gouv.fr), qui republie le flux GTFS-RT
 protobuf standard de la SNCF sans authentification requise, rafraîchi ~toutes les 2 minutes.
+
+Le message publié contient la liste ENTIÈRE des arrêts restants du trajet (stop_id + horaire
+prédit arrivée/départ), pas seulement le dernier : la SNCF ne publie pas de position GPS par train
+(pas de flux GTFS-RT vehicle-positions), donc l'API (apps/api/main.py, endpoint /realtime/trains)
+reconstruit une position interpolée entre les deux gares qui encadrent l'heure courante à partir de
+cet horaire — cf. limite documentée dans l'endpoint.
 """
 
 import json
@@ -27,22 +33,38 @@ def fetch_feed() -> gtfs_realtime_pb2.FeedMessage:
     return feed
 
 
+def _event_fields(event) -> tuple[int | None, int | None]:
+    """(time, delay) d'un StopTimeEvent GTFS-RT (arrival ou departure), ou (None, None) si absent."""
+    time_ = event.time if event.HasField("time") else None
+    delay = event.delay if event.HasField("delay") else None
+    return time_, delay
+
+
 def entity_to_message(entity, feed_timestamp: int) -> dict | None:
     if not entity.HasField("trip_update") or not entity.trip_update.stop_time_update:
         return None
     trip_update = entity.trip_update
-    last_stop = trip_update.stop_time_update[-1]
-    delay = None
-    if last_stop.HasField("arrival") and last_stop.arrival.HasField("delay"):
-        delay = last_stop.arrival.delay
-    elif last_stop.HasField("departure") and last_stop.departure.HasField("delay"):
-        delay = last_stop.departure.delay
+
+    stops = []
+    for stu in trip_update.stop_time_update:
+        arrival_time, arrival_delay = (None, None)
+        departure_time, departure_delay = (None, None)
+        if stu.HasField("arrival"):
+            arrival_time, arrival_delay = _event_fields(stu.arrival)
+        if stu.HasField("departure"):
+            departure_time, departure_delay = _event_fields(stu.departure)
+        stops.append({
+            "stop_id": stu.stop_id,
+            "arrival_time": arrival_time,
+            "arrival_delay": arrival_delay,
+            "departure_time": departure_time,
+            "departure_delay": departure_delay,
+        })
+
     return {
-        "entity_id": entity.id,
         "trip_id": trip_update.trip.trip_id,
         "route_id": trip_update.trip.route_id or None,
-        "stop_id": last_stop.stop_id,
-        "delay_seconds": delay,
+        "stops": stops,
         "feed_timestamp": feed_timestamp,
         "captured_at": int(time.time()),
     }

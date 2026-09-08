@@ -8,6 +8,7 @@ import time
 
 import psycopg
 from kafka import KafkaConsumer
+from psycopg.types.json import Jsonb
 
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP", "kafka:9092")
 TOPIC = os.getenv("TOPIC", "gtfs-rt-trip-updates")
@@ -21,11 +22,13 @@ RDS_SECRET_NAME = os.getenv("RDS_SECRET_NAME")
 AWS_REGION = os.getenv("AWS_REGION")
 
 UPSERT_SQL = """
-INSERT INTO fact_realtime (entity_id, trip_id, route_id, stop_id, delay_seconds, feed_timestamp, captured_at, updated_at)
-VALUES (%(entity_id)s, %(trip_id)s, %(route_id)s, %(stop_id)s, %(delay_seconds)s, %(feed_timestamp)s, to_timestamp(%(captured_at)s), now())
-ON CONFLICT (entity_id) DO UPDATE SET
-    delay_seconds  = EXCLUDED.delay_seconds,
+INSERT INTO fact_realtime (trip_id, route_id, stops, feed_timestamp, captured_at, updated_at)
+VALUES (%(trip_id)s, %(route_id)s, %(stops)s, %(feed_timestamp)s, to_timestamp(%(captured_at)s), now())
+ON CONFLICT (trip_id) DO UPDATE SET
+    route_id       = EXCLUDED.route_id,
+    stops          = EXCLUDED.stops,
     feed_timestamp = EXCLUDED.feed_timestamp,
+    captured_at    = EXCLUDED.captured_at,
     updated_at     = now();
 """
 
@@ -94,7 +97,8 @@ def main() -> None:
     conn = connect_pg()
     try:
         for message in consumer:
-            row = message.value
+            row = dict(message.value)
+            row["stops"] = Jsonb(row["stops"])
             while True:
                 try:
                     with conn.cursor() as cur:
@@ -107,7 +111,7 @@ def main() -> None:
                     print(f"[consumer] connexion PostgreSQL perdue ({exc!r}), reconnexion...", flush=True)
                     conn.close()
                     conn = connect_pg()
-            print(f"[consumer] upsert trip={row['trip_id']} retard={row['delay_seconds']}s", flush=True)
+            print(f"[consumer] upsert trip={message.value['trip_id']} ({len(message.value['stops'])} arrêts)", flush=True)
     finally:
         conn.close()
 

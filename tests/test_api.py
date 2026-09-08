@@ -133,6 +133,67 @@ def test_access_log_never_contains_raw_client_ip(client, caplog):
     assert '"GET /health" 200' in logged_message
 
 
+@pytest.mark.parametrize(
+    "stop_id, expected",
+    [
+        ("StopPoint:OCETGV INOUI-87688887", "87688887"),
+        ("StopArea:OCE83045013", "83045013"),
+        ("StopPoint:OCESN-8748100", "8748100"),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_uic_from_stop_id(stop_id, expected):
+    assert api_main._uic_from_stop_id(stop_id) == expected
+
+
+def _stop(stop_id, arrival_time=None, arrival_delay=None, departure_time=None, departure_delay=None):
+    return {
+        "stop_id": stop_id,
+        "arrival_time": arrival_time,
+        "arrival_delay": arrival_delay,
+        "departure_time": departure_time,
+        "departure_delay": departure_delay,
+    }
+
+
+def test_interpolate_trip_en_route_midpoint():
+    stops = [
+        _stop("A", departure_time=1000),
+        _stop("B", arrival_time=1100, arrival_delay=300),
+    ]
+    result = api_main._interpolate_trip(stops, now=1050)
+    assert result["statut"] == "en_route"
+    assert result["stop_id_precedent"] == "A"
+    assert result["stop_id_suivant"] == "B"
+    assert result["progression"] == 0.5
+    assert result["retard_s"] == 300
+
+
+def test_interpolate_trip_not_yet_departed():
+    stops = [
+        _stop("A", departure_time=1000, departure_delay=0),
+        _stop("B", arrival_time=1100),
+    ]
+    result = api_main._interpolate_trip(stops, now=900)
+    assert result["statut"] == "a_quai"
+    assert result["stop_id_precedent"] == result["stop_id_suivant"] == "A"
+    assert result["progression"] == 0.0
+
+
+def test_interpolate_trip_finished_returns_none():
+    stops = [
+        _stop("A", departure_time=1000),
+        _stop("B", arrival_time=1100),
+    ]
+    assert api_main._interpolate_trip(stops, now=1200) is None
+
+
+def test_interpolate_trip_insufficient_schedule_returns_none():
+    assert api_main._interpolate_trip([_stop("A")], now=1000) is None
+    assert api_main._interpolate_trip([], now=1000) is None
+
+
 def test_metrics_endpoint_exposes_prometheus_format(client):
     # les compteurs Prometheus sont un état global du process : on ne peut pas viser une valeur
     # exacte (d'autres tests de ce fichier appellent aussi ces endpoints avant celui-ci), on

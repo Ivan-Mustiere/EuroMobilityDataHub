@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radar Ferroviaire</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root{
+    --ink:#0B1220;
+    --panel:#121B2E;
+    --panel-2:#0E1728;
+    --line:#243149;
+    --text:#E8ECF4;
+    --text-dim:#8B98B8;
+    --accent:#FF6A3D;
+    --ok:#34D399;
+    --warn:#FBBF24;
+    --crit:#F87171;
+    --idle:#5B6B8C;
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    background:var(--ink);
+    color:var(--text);
+    font-family:"Work Sans",system-ui,sans-serif;
+    overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  .frame{ position:relative; width:100%; height:100vh; display:flex; flex-direction:column; }
+
+  /* ---------- top bar ---------- */
+  .topbar{
+    display:flex;
+    align-items:baseline;
+    gap:18px;
+    padding:16px 22px 12px;
+    border-bottom:1px solid var(--line);
+    background:var(--panel);
+    z-index:900; /* au-dessus des tuiles/contrôles Leaflet */
+    position:relative;
+  }
+  h1{
+    font-family:"Big Shoulders Display", system-ui, sans-serif;
+    font-weight:800;
+    font-size:28px;
+    letter-spacing:0.02em;
+    text-transform:uppercase;
+    margin:0;
+    line-height:1;
+    text-wrap:balance;
+  }
+  h1 span{ color:var(--accent); }
+  .subtitle{
+    font-size:12.5px;
+    color:var(--text-dim);
+    font-family:"IBM Plex Mono", monospace;
+    letter-spacing:0.01em;
+  }
+  .spacer{ flex:1; }
+  .pulse-wrap{
+    display:flex; align-items:center; gap:8px;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:12px; color:var(--text-dim);
+  }
+  .pulse-dot{
+    width:9px; height:9px; border-radius:50%;
+    background:var(--idle);
+  }
+  .pulse-dot.live{ background:var(--accent); animation:pulse 2.2s ease-out infinite; }
+  @keyframes pulse{
+    0%{ box-shadow:0 0 0 0 rgba(255,106,61,0.55); }
+    70%{ box-shadow:0 0 0 10px rgba(255,106,61,0); }
+    100%{ box-shadow:0 0 0 0 rgba(255,106,61,0); }
+  }
+  @media (prefers-reduced-motion: reduce){ .pulse-dot.live{ animation:none; } }
+
+  /* ---------- map ---------- */
+  .map-area{ position:relative; flex:1; min-height:0; }
+  #leafletMap{ width:100%; height:100%; background:var(--ink); }
+
+  /* thème sombre pour les contrôles Leaflet (zoom +/-) */
+  .leaflet-control-zoom a{
+    background:var(--panel) !important;
+    color:var(--text) !important;
+    border-color:var(--line) !important;
+  }
+  .leaflet-control-zoom a:hover{ background:var(--panel-2) !important; }
+  .leaflet-control-attribution{
+    background:rgba(18,27,46,0.75) !important;
+    color:var(--text-dim) !important;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:10px !important;
+  }
+  .leaflet-control-attribution a{ color:var(--text-dim) !important; }
+
+  /* marqueurs train */
+  .train-icon{ position:relative; width:100%; height:100%; }
+  .train-icon .halo{
+    position:absolute;
+    top:50%; left:50%;
+    width:18px; height:18px;
+    border-radius:50%;
+    opacity:0.18;
+    transform:translate(-50%,-50%);
+  }
+  .train-icon .core{
+    position:absolute;
+    top:50%; left:50%;
+    width:7px; height:7px;
+    border-radius:50%;
+    transform:translate(-50%,-50%);
+    box-shadow:0 0 0 1.5px rgba(11,18,32,0.7);
+  }
+  .train-icon.en_route .core{ animation:blip 2.4s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce){ .train-icon.en_route .core{ animation:none; } }
+  @keyframes blip{
+    0%,100%{ width:7px; height:7px; }
+    50%{ width:10px; height:10px; }
+  }
+  .train-icon.selected .core{
+    box-shadow:0 0 0 2px #fff, 0 0 0 4px rgba(255,106,61,0.8);
+  }
+  .train-icon .cause-badge{
+    position:absolute;
+    top:-1px; right:-1px;
+    width:6px; height:6px;
+    border-radius:50%;
+    background:#FBBF24;
+    box-shadow:0 0 0 1.5px rgba(11,18,32,0.85), 0 0 4px rgba(251,191,36,0.9);
+  }
+  .route-arrow{
+    width:0; height:0;
+    border-left:5px solid transparent;
+    border-right:5px solid transparent;
+    border-bottom:9px solid #FF6A3D;
+    transform-origin:50% 60%;
+    filter:drop-shadow(0 0 2px rgba(11,18,32,0.9));
+  }
+  .leaflet-tooltip.train-tt{
+    background:var(--panel);
+    border:1px solid var(--line);
+    color:var(--text);
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11.5px;
+    padding:4px 8px;
+  }
+  .leaflet-tooltip.train-tt::before{ display:none; }
+
+  /* ---------- overlays ---------- */
+  .panel{
+    position:absolute;
+    background:rgba(18,27,46,0.9);
+    backdrop-filter:blur(6px);
+    border:1px solid var(--line);
+    border-radius:3px;
+    z-index:800;
+  }
+  .legend{ left:14px; bottom:14px; padding:14px 16px; min-width:210px; }
+  .legend h2{
+    margin:0 0 10px;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:10.5px;
+    letter-spacing:0.12em;
+    text-transform:uppercase;
+    color:var(--text-dim);
+    font-weight:400;
+  }
+  .legend-row{ display:flex; align-items:center; gap:9px; font-family:"IBM Plex Mono", monospace; font-size:12px; padding:3px 0; }
+  .swatch{ width:9px; height:9px; border-radius:50%; flex:none; }
+  .legend-row .count{ margin-left:auto; font-variant-numeric:tabular-nums; color:var(--text); }
+  .legend-divider{ height:1px; background:var(--line); margin:10px 0; }
+  .stat-row{ display:flex; justify-content:space-between; font-family:"IBM Plex Mono", monospace; font-size:12px; color:var(--text-dim); padding:2px 0; }
+  .stat-row b{ color:var(--text); font-weight:500; font-variant-numeric:tabular-nums; }
+
+  .status-banner{
+    top:14px; left:50%; transform:translateX(-50%);
+    padding:10px 18px;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:12.5px;
+    text-align:center;
+    max-width:560px;
+    line-height:1.55;
+  }
+  .status-banner.connecting{ border-color:var(--line); color:var(--text-dim); }
+  .status-banner.error{ border-color:var(--crit); }
+  .status-banner.ok{ display:none; }
+  .status-banner code{ background:var(--panel-2); padding:1px 5px; border-radius:2px; color:var(--accent); }
+
+  /* ---------- panneau de détail (clic sur un train) ---------- */
+  .inspector{
+    right:14px; top:14px;
+    width:280px;
+    padding:18px 18px 16px;
+    transform:translateX(320px);
+    transition:transform .18s ease;
+  }
+  .inspector.open{ transform:translateX(0); }
+  .inspector-close{
+    position:absolute; top:10px; right:10px;
+    width:22px; height:22px;
+    border:none; background:transparent; color:var(--text-dim);
+    font-size:16px; line-height:1; cursor:pointer;
+    font-family:"IBM Plex Mono", monospace;
+  }
+  .inspector-close:hover{ color:var(--text); }
+  .badge{
+    display:inline-block;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:10.5px;
+    letter-spacing:0.06em;
+    text-transform:uppercase;
+    padding:2.5px 8px;
+    border-radius:20px;
+    margin-bottom:10px;
+  }
+  .badge.ok{ background:rgba(52,211,153,0.16); color:var(--ok); }
+  .badge.warn{ background:rgba(251,191,36,0.16); color:var(--warn); }
+  .badge.crit{ background:rgba(248,113,113,0.16); color:var(--crit); }
+  .badge.idle{ background:rgba(91,107,140,0.2); color:var(--idle); }
+  .insp-route{
+    font-family:"Big Shoulders Display", system-ui, sans-serif;
+    font-weight:700;
+    font-size:19px;
+    text-transform:uppercase;
+    letter-spacing:0.01em;
+    margin:0 0 2px;
+    text-wrap:balance;
+  }
+  .insp-trip{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:10px;
+    color:var(--text-dim);
+    word-break:break-all;
+    margin:0 0 16px;
+    line-height:1.5;
+  }
+  .insp-journey{
+    display:flex; flex-direction:column; gap:6px;
+    font-size:13px;
+    margin-bottom:6px;
+  }
+  .insp-stop{ display:flex; justify-content:space-between; gap:8px; }
+  .insp-stop b{ font-weight:500; }
+  .insp-bar{
+    height:4px; border-radius:2px;
+    background:var(--line);
+    overflow:hidden;
+  }
+  .insp-bar-fill{ height:100%; border-radius:2px; }
+  .insp-progress-label{
+    font-family:"IBM Plex Mono", monospace;
+    font-size:10.5px;
+    color:var(--text-dim);
+    text-align:right;
+    margin:4px 0 16px;
+  }
+  .insp-stat{
+    display:flex; justify-content:space-between; align-items:baseline;
+    padding:8px 0;
+    border-top:1px solid var(--line);
+    font-family:"IBM Plex Mono", monospace;
+    font-size:12px;
+    color:var(--text-dim);
+  }
+  .insp-stat b{ color:var(--text); font-weight:500; font-variant-numeric:tabular-nums; }
+  .insp-cause{
+    display:flex; justify-content:space-between; align-items:baseline; gap:12px;
+    padding:8px 0;
+    border-top:1px solid var(--line);
+    font-family:"IBM Plex Mono", monospace;
+    font-size:12px;
+    color:var(--text-dim);
+  }
+  .insp-cause b{ color:#FBBF24; font-weight:500; text-align:right; }
+  .insp-empty{
+    color:var(--text-dim);
+    font-size:12.5px;
+    line-height:1.6;
+  }
+
+  .credit{
+    position:absolute; left:14px; top:14px;
+    font-family:"IBM Plex Mono", monospace;
+    font-size:10px;
+    color:var(--text-dim);
+    opacity:0.75;
+    z-index:700;
+    line-height:1.5;
+    pointer-events:none;
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="topbar">
+    <div>
+      <h1>Radar <span>Ferroviaire</span></h1>
+      <div class="subtitle">Position estimée des trains SNCF en circulation — France métropolitaine</div>
+    </div>
+    <div class="spacer"></div>
+    <div class="pulse-wrap">
+      <div class="pulse-dot" id="pulseDot"></div>
+      <span id="pulseLabel">connexion…</span>
+    </div>
+  </div>
+
+  <div class="map-area">
+    <div id="leafletMap"></div>
+
+    <div class="credit">GTFS-RT SNCF · proxy.transport.data.gouv.fr<br>Position interpolée sur l'horaire, pas un GPS embarqué</div>
+
+    <div class="panel status-banner connecting" id="statusBanner">Connexion à l'API…</div>
+
+    <div class="panel legend">
+      <h2>Retard estimé</h2>
+      <div class="legend-row"><span class="swatch" style="background:var(--ok)"></span>À l'heure (&lt; 2 min)<span class="count" id="cOk">–</span></div>
+      <div class="legend-row"><span class="swatch" style="background:var(--warn)"></span>Retard modéré (2–10 min)<span class="count" id="cWarn">–</span></div>
+      <div class="legend-row"><span class="swatch" style="background:var(--crit)"></span>Retard important (&gt; 10 min)<span class="count" id="cCrit">–</span></div>
+      <div class="legend-row"><span class="swatch" style="background:var(--idle)"></span>À quai / inconnu<span class="count" id="cIdle">–</span></div>
+      <div class="legend-divider"></div>
+      <div class="stat-row"><span>Trains suivis</span><b id="statTotal">–</b></div>
+      <div class="stat-row"><span>Retard moyen</span><b id="statAvg">–</b></div>
+      <div class="stat-row"><span>Dernière mise à jour</span><b id="statAge">–</b></div>
+    </div>
+
+    <div class="panel inspector" id="inspector">
+      <button class="inspector-close" id="inspectorClose" aria-label="Fermer">×</button>
+      <div id="inspectorBody"><div class="insp-empty">Clique sur un train pour voir son détail.</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // Page servie par l'API elle-même (GET /realtime/map) : même origine que /realtime/trains,
+  // donc un simple chemin relatif suffit — pas de CORS à gérer pour cette démo. Un site tiers qui
+  // voudrait construire sa propre carte pointerait ce même endpoint depuis son propre domaine
+  // (le CORS de l'API est ouvert par conception, cf. apps/api/main.py) avec sa propre clé API.
+  var API_KEY = "dev-local-key"; // clé du profil local-test (infra/cloud/local-test/api.env), pas un secret
+  var REFRESH_MS = 15000;
+
+  var COLOR = { ok:"#34D399", warn:"#FBBF24", crit:"#F87171", idle:"#5B6B8C" };
+
+  var map = L.map("leafletMap", { zoomControl:true, attributionControl:true, minZoom:5, maxZoom:14 })
+    .setView([46.6, 2.3], 6);
+
+  // Tuiles CARTO Dark Matter (OSM + CARTO, gratuit jusqu'à 5M requêtes/mois, attribution requise) :
+  // fond de carte réel. Depuis fin août 2026, CARTO exige une clé (gratuite, sans validation,
+  // cf. https://carto.com/basemaps/apikey), injectée par /realtime/map (apps/api/main.py) via
+  // CARTO_API_KEY — pas un secret à protéger, restreinte par domaine dans le dashboard CARTO.
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key={{CARTO_API_KEY}}", {
+    attribution: "© OpenStreetMap, © CARTO",
+    subdomains: "abcd",
+    maxZoom: 19
+  }).addTo(map);
+
+  var markersLayer = L.layerGroup().addTo(map);
+  var selectedRouteLayer = L.layerGroup().addTo(map);
+  var markerByTrip = {};
+  var trainByTrip = {};
+  var selectedTripId = null;
+
+  function bearingDeg(lat1, lon1, lat2, lon2){
+    var toRad = Math.PI/180, toDeg = 180/Math.PI;
+    var y = Math.sin((lon2-lon1)*toRad) * Math.cos(lat2*toRad);
+    var x = Math.cos(lat1*toRad)*Math.sin(lat2*toRad) -
+            Math.sin(lat1*toRad)*Math.cos(lat2*toRad)*Math.cos((lon2-lon1)*toRad);
+    return (Math.atan2(y, x)*toDeg + 360) % 360;
+  }
+
+  function arrowIcon(bearing){
+    return L.divIcon({
+      className: "",
+      html: '<div class="route-arrow" style="transform:rotate(' + bearing + 'deg)"></div>',
+      iconSize: [10, 10],
+      iconAnchor: [5, 5]
+    });
+  }
+
+  // Itinéraire du train sélectionné uniquement (pas de tous les trains à la fois : trop chargé
+  // visuellement) — pointillé + flèches de direction à chaque étape restante du trajet.
+  function updateSelectedRoute(){
+    selectedRouteLayer.clearLayers();
+    var t = selectedTripId && trainByTrip[selectedTripId];
+    var pts = t && t.itineraire_restant;
+    if (!pts || pts.length < 2) return;
+
+    L.polyline(pts, { color:"#FF6A3D", weight:2.5, opacity:0.8, dashArray:"6,6" }).addTo(selectedRouteLayer);
+
+    for (var i = 0; i < pts.length - 1; i++){
+      var a = pts[i], b = pts[i+1];
+      var mid = [(a[0]+b[0])/2, (a[1]+b[1])/2];
+      var brg = bearingDeg(a[0], a[1], b[0], b[1]);
+      L.marker(mid, { icon: arrowIcon(brg), interactive: false }).addTo(selectedRouteLayer);
+    }
+  }
+
+  function statusForDelay(retardS){
+    if (retardS === null || retardS === undefined) return "idle";
+    if (retardS < 120) return "ok";
+    if (retardS <= 600) return "warn";
+    return "crit";
+  }
+
+  function fmtDelay(s){
+    if (s === null || s === undefined) return "inconnu";
+    var m = Math.round(s/60);
+    if (m === 0) return "à l'heure";
+    return "+" + m + " min";
+  }
+
+  function routeLabel(routeId, tripId){
+    if (routeId) return routeId;
+    var m = /:(OUI|OGO|TER|IC|CTE):/.exec(tripId || "");
+    var names = {OUI:"TGV INOUI", OGO:"OUIGO", TER:"TER", IC:"Intercités", CTE:"Intercités"};
+    return m ? names[m[1]] : "Train";
+  }
+
+  var STATUS_LABEL = { ok:"à l'heure", warn:"retard modéré", crit:"retard important", idle:"statut inconnu" };
+
+  function makeIcon(status, statut, isSelected, hasCause){
+    var size = statut === "en_route" ? 20 : 16;
+    return L.divIcon({
+      className: "",
+      html:
+        '<div class="train-icon ' + statut + (isSelected ? " selected" : "") + '">' +
+          '<div class="halo" style="background:' + COLOR[status] + '"></div>' +
+          '<div class="core" style="background:' + COLOR[status] + '"></div>' +
+          (hasCause ? '<div class="cause-badge"></div>' : '') +
+        "</div>",
+      iconSize: [size, size],
+      iconAnchor: [size/2, size/2]
+    });
+  }
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, function(c){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
+    });
+  }
+
+  function inspectorHtml(t){
+    var st = statusForDelay(t.retard_s);
+    var pct = Math.round(t.progression * 100);
+    return (
+      '<span class="badge ' + st + '">' + STATUS_LABEL[st] + '</span>' +
+      '<div class="insp-route">' + routeLabel(t.route_id, t.trip_id) + '</div>' +
+      '<div class="insp-trip">' + t.trip_id + '</div>' +
+      '<div class="insp-journey">' +
+        '<div class="insp-stop"><span>' + t.gare_precedente + '</span></div>' +
+        '<div class="insp-bar"><div class="insp-bar-fill" style="width:' + pct + '%;background:' + COLOR[st] + '"></div></div>' +
+        '<div class="insp-stop"><span>' + t.gare_suivante + '</span></div>' +
+      '</div>' +
+      '<div class="insp-progress-label">' + pct + '% du trajet parcouru</div>' +
+      '<div class="insp-stat"><span>Retard estimé</span><b>' + fmtDelay(t.retard_s) + '</b></div>' +
+      '<div class="insp-stat"><span>Statut</span><b>' + (t.statut === "en_route" ? "en circulation" : "à quai") + '</b></div>' +
+      (t.cause_retard ? '<div class="insp-cause"><span>Cause</span><b>' + escapeHtml(t.cause_retard) + '</b></div>' : '') +
+      '<div class="insp-stat"><span>Dernière donnée reçue</span><b>' + new Date(t.maj).toLocaleTimeString("fr-FR") + '</b></div>'
+    );
+  }
+
+  function openInspector(tripId){
+    selectedTripId = tripId;
+    document.getElementById("inspector").classList.add("open");
+    refreshInspector();
+  }
+  function closeInspector(){
+    selectedTripId = null;
+    document.getElementById("inspector").classList.remove("open");
+    updateSelectedRoute();
+  }
+  function refreshInspector(){
+    updateSelectedRoute();
+    if (!selectedTripId) return;
+    var t = trainByTrip[selectedTripId];
+    var body = document.getElementById("inspectorBody");
+    if (!t){
+      body.innerHTML = '<div class="insp-empty">Ce train n\'apparaît plus dans le dernier rafraîchissement (arrivé à destination ou hors fenêtre).</div>';
+      return;
+    }
+    body.innerHTML = inspectorHtml(t);
+  }
+  document.getElementById("inspectorClose").addEventListener("click", closeInspector);
+
+  function render(trains){
+    markersLayer.clearLayers();
+    markerByTrip = {};
+    trainByTrip = {};
+
+    var counts = {ok:0, warn:0, crit:0, idle:0};
+    var delaySum = 0, delayN = 0;
+
+    trains.forEach(function(t){
+      trainByTrip[t.trip_id] = t;
+      var st = statusForDelay(t.retard_s);
+      counts[st]++;
+      if (t.retard_s !== null && t.retard_s !== undefined){ delaySum += t.retard_s; delayN++; }
+
+      var marker = L.marker([t.latitude, t.longitude], {
+        icon: makeIcon(st, t.statut, t.trip_id === selectedTripId, !!t.cause_retard)
+      });
+      marker.bindTooltip(routeLabel(t.route_id, t.trip_id) + " · " + fmtDelay(t.retard_s), {
+        direction: "top", offset: [0, -10], className: "train-tt"
+      });
+      marker.on("click", function(){ openInspector(t.trip_id); });
+      marker.addTo(markersLayer);
+      markerByTrip[t.trip_id] = marker;
+    });
+
+    document.getElementById("cOk").textContent = counts.ok;
+    document.getElementById("cWarn").textContent = counts.warn;
+    document.getElementById("cCrit").textContent = counts.crit;
+    document.getElementById("cIdle").textContent = counts.idle;
+    document.getElementById("statTotal").textContent = trains.length;
+    document.getElementById("statAvg").textContent = delayN ? ("+" + Math.round(delaySum/delayN/60) + " min") : "—";
+
+    refreshInspector();
+  }
+
+  var pulseDot = document.getElementById("pulseDot");
+  var pulseLabel = document.getElementById("pulseLabel");
+  var banner = document.getElementById("statusBanner");
+  var lastUpdate = null;
+
+  function setConnected(){
+    pulseDot.classList.add("live");
+    pulseLabel.textContent = "en direct";
+    banner.className = "panel status-banner ok";
+    lastUpdate = new Date();
+  }
+  function setConnecting(){
+    pulseDot.classList.remove("live");
+    pulseLabel.textContent = "connexion…";
+    banner.className = "panel status-banner connecting";
+    banner.textContent = "Connexion à l'API…";
+  }
+  function setError(msg){
+    pulseDot.classList.remove("live");
+    pulseLabel.textContent = "hors ligne";
+    banner.className = "panel status-banner error";
+    banner.innerHTML = msg;
+  }
+
+  function tick(){
+    fetch("/realtime/trains?max_age_s=600", { headers: { "X-API-Key": API_KEY } })
+      .then(function(res){
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(function(trains){
+        render(trains);
+        setConnected();
+      })
+      .catch(function(err){
+        setError("Impossible de charger <code>/realtime/trains</code> (" + err.message + "). Vérifie que le consumer/Kafka tournent bien.");
+      });
+  }
+
+  function updateAge(){
+    var e = document.getElementById("statAge");
+    if (!lastUpdate){ e.textContent = "–"; return; }
+    var s = Math.round((Date.now() - lastUpdate.getTime())/1000);
+    e.textContent = s < 60 ? (s + " s") : (Math.round(s/60) + " min");
+  }
+
+  setConnecting();
+  tick();
+  setInterval(tick, REFRESH_MS);
+  setInterval(updateAge, 1000);
+})();
+</script>
+</body>
+</html>
