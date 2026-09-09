@@ -25,6 +25,16 @@ jobs:
       - name: Unit tests
         run: pytest tests/ -v
 
+      - name: Security scan — dependencies (pip-audit)
+        run: pip-audit -r requirements.txt
+
+      - name: Security scan — code, high severity (bandit, bloquant)
+        run: bandit -r apps -lll
+
+      - name: Security scan — code, rapport complet (bandit, non bloquant)
+        run: bandit -r apps -ll
+        continue-on-error: true
+
       - name: Smoke test pipeline (preprod)
         run: python apps/pipeline/run.py --env preprod
 
