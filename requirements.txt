@@ -1,5 +1,5 @@
 annotated-doc==0.0.4
-ipywidgets>=8.1
+ipywidgets>=8.1.8
 notebook>=7.0
 plotly>=5.24
 bandit==1.9.4
